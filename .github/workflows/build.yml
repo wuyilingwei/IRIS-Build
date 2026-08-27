@@ -1,0 +1,585 @@
+name: Build IRIS
+
+on:
+  repository_dispatch:
+    types: [iris-build]
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: Build operation
+        required: true
+        type: choice
+        options: [core, shell, rotate]
+      source_sha:
+        description: Exact 40-character commit in wuyilingwei/IRIS
+        required: true
+        type: string
+      shell_version:
+        description: Optional shell version (x.y.z)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: iris-build
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: ${{ github.event.client_payload.source_sha || inputs.source_sha }}
+  IRIS_LICENSE_API_URL: https://iris.wuyilingwei.com
+  IRIS_LICENSE_BUILD_API_ORIGIN: https://iris.wuyilingwei.com
+  WORKFLOW_REPORT_API: https://iris.wuyilingwei.com/api/v1/internal/workflow-reports
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  cleanup:
+    name: Remove previous workflow runs
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete all previous runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" --jq '.workflow_runs[] | select(.run_number < ('"$GITHUB_RUN_NUMBER"')) | .id' |
+            while IFS= read -r run_id; do
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" >/dev/null
+            done
+
+  core:
+    needs: cleanup
+    permissions:
+      contents: write
+    if: (github.event_name == 'repository_dispatch' && github.event.action == 'iris-build' && github.event.client_payload.build_kind == 'core') || (github.event_name == 'workflow_dispatch' && inputs.kind == 'core')
+    runs-on: ubuntu-latest
+    outputs:
+      core_version: ${{ steps.number.outputs.core_version }}
+    steps:
+      - name: Checkout build repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Validate inputs and secrets
+        env:
+          IRIS_BUILD_DEPLOY_KEY: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || { echo 'source_sha must be a 40-character commit SHA' >&2; exit 1; }
+          [[ -n "$IRIS_BUILD_DEPLOY_KEY" && -n "$IRIS_RELEASE_UPLOAD_TOKEN" && -n "$IRIS_RELEASE_KEY_TRANSFER_KEY" ]] || { echo 'required secrets are missing' >&2; exit 1; }
+      - name: Checkout exact private source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: wuyilingwei/IRIS
+          ref: ${{ env.SOURCE_SHA }}
+          path: iris-source
+          ssh-key: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
+          persist-credentials: false
+      - name: Use source scripts
+        run: |
+          rsync -a --exclude=.git iris-source/ ./
+          rm -rf certificates
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 20
+      - name: Install dependencies
+        env:
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          IRIS_SHELL_VERDICT_FILE: ${{ runner.temp }}/shell-gate-verdict
+          IRIS_SHELL_GATE_OUTCOME: success
+          IRIS_BUILD_CHANNEL: release
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh install
+      - name: Read build metadata
+        id: meta
+        env:
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh metadata
+      - name: Resolve current release
+        env:
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh fetch-envelope
+      - name: Verify released shell compatibility
+        id: verify
+        continue-on-error: true
+        env:
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          IRIS_INTERNAL_VERSION: ${{ steps.meta.outputs.internal_version }}
+          IRIS_SHELL_VERDICT_FILE: ${{ runner.temp }}/shell-gate-verdict
+        run: node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh verify-shell-compatibility
+      - name: Apply shell gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IRIS_AUTO_SHELL_BUILD: 'true'
+          IRIS_SHELL_GATE_OUTCOME: ${{ steps.verify.outcome }}
+          IRIS_SHELL_VERDICT_FILE: ${{ runner.temp }}/shell-gate-verdict
+        run: |
+          bash .github/scripts/release-step.sh shell-gate
+          if grep -q '^shell_build=true$' "$GITHUB_OUTPUT"; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" \
+              -f event_type=iris-build \
+              -f 'client_payload[build_kind]=shell' \
+              -f "client_payload[source_sha]=$SOURCE_SHA"
+          fi
+      - name: Reserve core version
+        id: number
+        if: steps.gate.outputs.shell_build != 'true'
+        env:
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: |
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh core-build-number
+      - name: Typecheck and build main
+        if: steps.gate.outputs.shell_build != 'true'
+        env:
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: |
+          node .github/scripts/run-quiet.mjs -- bash -c 'npm run typecheck:renderer && npm run build:main'
+      - name: Decrypt release key
+        if: steps.gate.outputs.shell_build != 'true'
+        env:
+          IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh decrypt-key
+      - name: Pack core payload
+        if: steps.gate.outputs.shell_build != 'true'
+        env:
+          IRIS_INTERNAL_VERSION: ${{ steps.meta.outputs.internal_version }}
+          IRIS_CORE_BUILD: ${{ steps.number.outputs.core_build }}
+          IRIS_CORE_VERSION: ${{ steps.number.outputs.core_version }}
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          IRIS_BUILD_CHANNEL: release
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh pack-payload
+      - name: Publish core payload
+        if: steps.gate.outputs.shell_build != 'true'
+        env:
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh upload-payload core-only
+      - name: Stage core release assets
+        if: steps.gate.outputs.shell_build != 'true'
+        run: mkdir -p release-assets && cp build/secure-payload/payload.irp build/secure-payload/ui.irp electron/dist/build-info.json release-assets/
+      - name: Publish latest GitHub Release
+        if: steps.gate.outputs.shell_build != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view latest >/dev/null 2>&1 || gh release create latest --title latest --notes '' --latest
+          gh release edit latest --title latest --notes '' --latest
+          for asset in payload.irp ui.irp; do gh release delete-asset latest "$asset" --yes >/dev/null 2>&1 || true; done
+          gh release upload latest release-assets/* --clobber
+          tag_state="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/latest" --jq '[.name,.tag_name,(.body // ""),.draft,.prerelease,.id] | @tsv')"
+          latest_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .id)"
+          [[ "$tag_state" == *$'latest\tlatest\t\tfalse\tfalse\t'* && "$tag_state" == *$'\t'"$latest_id" ]]
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/latest" --jq '[.assets[] | select(.state != "uploaded")] | length')" = 0
+      - name: Wipe secrets and source
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" iris-source release-assets build
+
+  core-tag:
+    needs: core
+    if: needs.core.result == 'success' && needs.core.outputs.core_version != ''
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require tag deploy key
+        env:
+          IRIS_TAG_DEPLOY_KEY: ${{ secrets.IRIS_TAG_DEPLOY_KEY }}
+        run: test -n "$IRIS_TAG_DEPLOY_KEY"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: wuyilingwei/IRIS
+          ref: ${{ env.SOURCE_SHA }}
+          ssh-key: ${{ secrets.IRIS_TAG_DEPLOY_KEY }}
+          persist-credentials: true
+      - name: Tag published core source
+        run: bash .github/scripts/tag-build-commit.sh "core-v${{ needs.core.outputs.core_version }}"
+
+  shell-check:
+    needs: cleanup
+    permissions:
+      contents: read
+    if: (github.event_name == 'repository_dispatch' && github.event.action == 'iris-build' && github.event.client_payload.build_kind == 'shell') || (github.event_name == 'workflow_dispatch' && inputs.kind == 'shell')
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ env.SOURCE_SHA }}
+      shell_version: ${{ steps.prepare.outputs.shell_version }}
+      release_envelope: ${{ steps.key.outputs.envelope }}
+      release_id: ${{ steps.key.outputs.release_id }}
+      internal_version: ${{ steps.prepare.outputs.internal_version }}
+      shell_fingerprint: ${{ steps.prepare.outputs.shell_fingerprint }}
+      core_build: ${{ steps.prepare.outputs.core_build }}
+      core_version: ${{ steps.prepare.outputs.core_version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Validate inputs and secrets
+        env:
+          IRIS_BUILD_DEPLOY_KEY: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
+          IRIS_MACOS_SIGNING_PASSWORD: ${{ secrets.IRIS_MACOS_SIGNING_PASSWORD }}
+          IRIS_MACOS_SIGNING_P12_BASE64: ${{ secrets.IRIS_MACOS_SIGNING_P12_BASE64 }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || exit 1
+          [[ -n "$IRIS_BUILD_DEPLOY_KEY" && -n "$IRIS_RELEASE_UPLOAD_TOKEN" && -n "$IRIS_RELEASE_KEY_TRANSFER_KEY" && -n "$IRIS_MACOS_SIGNING_PASSWORD" && -n "$IRIS_MACOS_SIGNING_P12_BASE64" ]] || { echo 'required secrets are missing' >&2; exit 1; }
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: wuyilingwei/IRIS
+          ref: ${{ env.SOURCE_SHA }}
+          path: iris-source
+          ssh-key: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
+          persist-credentials: false
+      - name: Use source scripts
+        run: |
+          rsync -a --exclude=.git iris-source/ ./
+          rm -rf certificates
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 20
+      - name: Prepare release and core payload
+        id: prepare
+        env:
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
+          IRIS_SHELL_VERSION_INPUT: ${{ github.event.client_payload.shell_version || inputs.shell_version }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          IRIS_BUILD_CHANNEL: release
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh install
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh resolve-version
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh metadata
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh shell-fingerprint
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh core-build-number
+          node .github/scripts/run-quiet.mjs -- bash -c 'npm run typecheck:renderer && npm run build:main'
+      - name: Generate release key
+        id: key
+        env:
+          IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: |
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh generate-key
+      - name: Decrypt and pack core payload
+        env:
+          IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
+          IRIS_RELEASE_KEY_ENVELOPE: ${{ steps.key.outputs.envelope }}
+          IRIS_RELEASE_ID: ${{ steps.key.outputs.release_id }}
+          IRIS_CORE_BUILD: ${{ steps.prepare.outputs.core_build }}
+          IRIS_CORE_VERSION: ${{ steps.prepare.outputs.core_version }}
+          IRIS_INTERNAL_VERSION: ${{ steps.prepare.outputs.internal_version }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          NODE_OPTIONS: --max-old-space-size=4096
+          IRIS_BUILD_CHANNEL: release
+        run: |
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh decrypt-key
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh pack-payload
+      - name: Publish core payload to next job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: core-payload
+          path: |
+            build/secure-payload/payload.irp
+            build/secure-payload/ui.irp
+            electron/dist/build-info.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Wipe shell-check workspace
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" iris-source build
+
+  shell-build:
+    needs: shell-check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            dist_cmd: npm run dist:win -- --publish never
+          - os: macos-latest
+            dist_cmd: npm run dist:mac -- --publish never
+          - os: ubuntu-latest
+            dist_cmd: npm run dist:linux -- --publish never
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: wuyilingwei/IRIS
+          ref: ${{ needs.shell-check.outputs.source_sha }}
+          path: iris-source
+          ssh-key: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
+          persist-credentials: false
+      - run: |
+          rsync -a --exclude=.git iris-source/ ./
+          rm -rf certificates
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 20
+      - name: Build installer
+        env:
+          IRIS_SHELL_VERSION: ${{ needs.shell-check.outputs.shell_version }}
+          IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
+          IRIS_RELEASE_KEY_ENVELOPE: ${{ needs.shell-check.outputs.release_envelope }}
+          IRIS_RELEASE_ID: ${{ needs.shell-check.outputs.release_id }}
+          IRIS_CORE_BUILD: ${{ needs.shell-check.outputs.core_build }}
+          IRIS_CORE_VERSION: ${{ needs.shell-check.outputs.core_version }}
+          IRIS_INTERNAL_VERSION: ${{ needs.shell-check.outputs.internal_version }}
+          IRIS_LICENSE_BUILD_API_ORIGIN: https://iris.wuyilingwei.com
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          CSC_KEY_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.IRIS_MACOS_SIGNING_PASSWORD || '' }}
+          IRIS_MACOS_SIGNING_P12_BASE64: ${{ matrix.os == 'macos-latest' && secrets.IRIS_MACOS_SIGNING_P12_BASE64 || '' }}
+          DIST_CMD: ${{ matrix.dist_cmd }}
+          EP_PREPACKAGED: ''
+          NODE_OPTIONS: --max-old-space-size=4096
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            printf '%s' "$IRIS_MACOS_SIGNING_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/iris-signing.p12"
+            chmod 600 "$RUNNER_TEMP/iris-signing.p12"
+            export CSC_LINK="$RUNNER_TEMP/iris-signing.p12"
+            export IRIS_MACOS_SIGNING_P12_PATH="$RUNNER_TEMP/iris-signing.p12"
+          fi
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh apply-version
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh install
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh decrypt-key
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh build
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh stage-installers
+          cp release/latest*.yml staged-installers/ 2>/dev/null || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: installers-${{ matrix.os }}
+          path: staged-installers
+          if-no-files-found: error
+          retention-days: 1
+      - name: Wipe build workspace and signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/iris-signing.p12"; rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" iris-source staged-installers build
+
+  shell-release:
+    needs: [shell-check, shell-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: wuyilingwei/IRIS
+          ref: ${{ needs.shell-check.outputs.source_sha }}
+          path: iris-source
+          ssh-key: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
+          persist-credentials: false
+      - run: |
+          rsync -a --exclude=.git iris-source/ ./
+          rm -rf certificates
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: installers-*
+          merge-multiple: true
+          path: staged-installers
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: core-payload
+          path: .
+      - name: Publish to license service and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
+          IRIS_RELEASE_KEY_ENVELOPE: ${{ needs.shell-check.outputs.release_envelope }}
+          IRIS_RELEASE_ID: ${{ needs.shell-check.outputs.release_id }}
+          IRIS_INTERNAL_VERSION: ${{ needs.shell-check.outputs.internal_version }}
+          IRIS_SHELL_VERSION: ${{ needs.shell-check.outputs.shell_version }}
+          IRIS_CORE_VERSION: ${{ needs.shell-check.outputs.core_version }}
+          IRIS_SHELL_FINGERPRINT: ${{ needs.shell-check.outputs.shell_fingerprint }}
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          IRIS_STAGED_DIR: staged-installers
+        run: |
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh decrypt-key
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh upload-payload with-key
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh publish-shell-assets
+          mkdir -p release-assets
+          cp build/secure-payload/payload.irp build/secure-payload/ui.irp electron/dist/build-info.json release-assets/
+          cp staged-installers/* release-assets/
+          gh release view latest >/dev/null 2>&1 || gh release create latest --title latest --notes '' --latest
+          gh release edit latest --title latest --notes '' --latest
+          gh release view latest --json assets --jq '.assets[].name' | while IFS= read -r asset; do gh release delete-asset latest "$asset" --yes >/dev/null; done
+          gh release upload latest release-assets/* --clobber
+          tag_state="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/latest" --jq '[.name,.tag_name,(.body // ""),.draft,.prerelease,.id] | @tsv')"
+          latest_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .id)"
+          [[ "$tag_state" == *$'latest\tlatest\t\tfalse\tfalse\t'* && "$tag_state" == *$'\t'"$latest_id" ]]
+          expected="$(find release-assets -maxdepth 1 -type f -exec basename {} \; | sort | paste -sd, -)"
+          actual="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/latest" --jq '[.assets[].name] | sort | join(",")')"
+          [[ "$actual" == "$expected" ]]
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/latest" --jq '[.assets[] | select(.state != "uploaded")] | length')" = 0
+      - name: Wipe shell-release workspace
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" "$RUNNER_TEMP/iris-signing.p12" iris-source staged-installers release-assets build
+
+  shell-tag:
+    needs: [shell-check, shell-release]
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require tag deploy key
+        env:
+          IRIS_TAG_DEPLOY_KEY: ${{ secrets.IRIS_TAG_DEPLOY_KEY }}
+        run: test -n "$IRIS_TAG_DEPLOY_KEY"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: wuyilingwei/IRIS
+          ref: ${{ needs.shell-check.outputs.source_sha }}
+          ssh-key: ${{ secrets.IRIS_TAG_DEPLOY_KEY }}
+          persist-credentials: true
+      - name: Tag published shell and core source
+        run: bash .github/scripts/tag-build-commit.sh "shell-v${{ needs.shell-check.outputs.shell_version }}" "core-v${{ needs.shell-check.outputs.core_version }}"
+
+  rotate-key:
+    needs: cleanup
+    permissions:
+      contents: write
+    if: (github.event_name == 'repository_dispatch' && github.event.action == 'iris-build' && github.event.client_payload.build_kind == 'rotate') || (github.event_name == 'workflow_dispatch' && inputs.kind == 'rotate')
+    runs-on: ubuntu-latest
+    outputs:
+      core_version: ${{ steps.number.outputs.core_version }}
+      internal_version: ${{ steps.meta.outputs.internal_version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Validate inputs and secrets
+        env:
+          IRIS_BUILD_DEPLOY_KEY: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || exit 1
+          [[ -n "$IRIS_BUILD_DEPLOY_KEY" && -n "$IRIS_RELEASE_UPLOAD_TOKEN" && -n "$IRIS_RELEASE_KEY_TRANSFER_KEY" ]] || exit 1
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: wuyilingwei/IRIS
+          ref: ${{ env.SOURCE_SHA }}
+          path: iris-source
+          ssh-key: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
+          persist-credentials: false
+      - run: |
+          rsync -a --exclude=.git iris-source/ ./
+          rm -rf certificates
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 20
+      - name: Install dependencies
+        env:
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          IRIS_BUILD_CHANNEL: release
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh install
+      - name: Read build metadata
+        id: meta
+        env:
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh metadata
+      - name: Resolve current release
+        env:
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          IRIS_INTERNAL_VERSION: ${{ steps.meta.outputs.internal_version }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: |
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh fetch-envelope
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh verify-shell-compatibility
+      - name: Reserve core version
+        id: number
+        env:
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh core-build-number
+      - name: Typecheck and build main
+        env:
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: node .github/scripts/run-quiet.mjs -- bash -c 'npm run typecheck:renderer && npm run build:main'
+      - name: Rotate release key
+        env:
+          IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh rotate-key
+      - name: Pack rotated core payload
+        env:
+          IRIS_INTERNAL_VERSION: ${{ steps.meta.outputs.internal_version }}
+          IRIS_CORE_BUILD: ${{ steps.number.outputs.core_build }}
+          IRIS_CORE_VERSION: ${{ steps.number.outputs.core_version }}
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          IRIS_BUILD_CHANNEL: release
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh pack-payload
+          node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh upload-payload rotate-key
+      - name: Update latest GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-assets
+          cp build/secure-payload/payload.irp build/secure-payload/ui.irp electron/dist/build-info.json release-assets/
+          gh release view latest >/dev/null 2>&1 || gh release create latest --title latest --notes '' --latest
+          gh release edit latest --title latest --notes '' --latest
+          for asset in payload.irp ui.irp; do gh release delete-asset latest "$asset" --yes >/dev/null 2>&1 || true; done
+          gh release upload latest release-assets/* --clobber
+          tag_state="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/latest" --jq '[.name,.tag_name,(.body // ""),.draft,.prerelease,.id] | @tsv')"
+          latest_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .id)"
+          [[ "$tag_state" == *$'latest\tlatest\t\tfalse\tfalse\t'* && "$tag_state" == *$'\t'"$latest_id" ]]
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/latest" --jq '[.assets[] | select(.state != "uploaded")] | length')" = 0
+      - name: Wipe rotate workspace
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" "$RUNNER_TEMP/shell-gate-verdict" "$RUNNER_TEMP/iris-signing.p12" iris-source release-assets build
+
+  rotate-tag:
+    needs: rotate-key
+    if: needs.rotate-key.result == 'success'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require tag deploy key
+        env:
+          IRIS_TAG_DEPLOY_KEY: ${{ secrets.IRIS_TAG_DEPLOY_KEY }}
+        run: test -n "$IRIS_TAG_DEPLOY_KEY"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: wuyilingwei/IRIS
+          ref: ${{ env.SOURCE_SHA }}
+          ssh-key: ${{ secrets.IRIS_TAG_DEPLOY_KEY }}
+          persist-credentials: true
+      - name: Tag rotated core source
+        run: bash .github/scripts/tag-build-commit.sh "core-v${{ needs.rotate-key.outputs.core_version }}"
