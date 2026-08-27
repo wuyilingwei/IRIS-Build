@@ -175,6 +175,19 @@ jobs:
           IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
           WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
         run: node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh upload-payload with-key
+      - name: Checkout source for core tag
+        if: steps.gate.outputs.shell_build != 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: wuyilingwei/IRIS
+          ref: ${{ env.SOURCE_SHA }}
+          path: tag-source
+          ssh-key: ${{ secrets.IRIS_TAG_DEPLOY_KEY }}
+          persist-credentials: false
+      - name: Tag published core source
+        if: steps.gate.outputs.shell_build != 'true'
+        working-directory: tag-source
+        run: bash .github/scripts/tag-build-commit.sh "core-v${{ steps.number.outputs.core_version }}"
       - name: Stage core release assets
         if: steps.gate.outputs.shell_build != 'true'
         run: mkdir -p release-assets && cp build/secure-payload/payload.irp build/secure-payload/ui.irp electron/dist/build-info.json release-assets/
@@ -193,27 +206,7 @@ jobs:
           test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/latest" --jq '[.assets[] | select(.state != "uploaded")] | length')" = 0
       - name: Wipe secrets and source
         if: always()
-        run: rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" iris-source release-assets build
-
-  core-tag:
-    needs: core
-    if: needs.core.result == 'success' && needs.core.outputs.core_version != ''
-    permissions:
-      contents: read
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require tag deploy key
-        env:
-          IRIS_TAG_DEPLOY_KEY: ${{ secrets.IRIS_TAG_DEPLOY_KEY }}
-        run: test -n "$IRIS_TAG_DEPLOY_KEY"
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-        with:
-          repository: wuyilingwei/IRIS
-          ref: ${{ env.SOURCE_SHA }}
-          ssh-key: ${{ secrets.IRIS_TAG_DEPLOY_KEY }}
-          persist-credentials: true
-      - name: Tag published core source
-        run: bash .github/scripts/tag-build-commit.sh "core-v${{ needs.core.outputs.core_version }}"
+        run: rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" iris-source tag-source release-assets build
 
   shell-check:
     needs: cleanup
@@ -440,6 +433,31 @@ jobs:
           node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh decrypt-key
           node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh upload-payload with-key
           node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh publish-shell-assets
+      - name: Checkout source for shell and core tags
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: wuyilingwei/IRIS
+          ref: ${{ needs.shell-check.outputs.source_sha }}
+          path: tag-source
+          ssh-key: ${{ secrets.IRIS_TAG_DEPLOY_KEY }}
+          persist-credentials: false
+      - name: Tag published shell and core source
+        working-directory: tag-source
+        run: bash .github/scripts/tag-build-commit.sh "shell-v${{ needs.shell-check.outputs.shell_version }}" "core-v${{ needs.shell-check.outputs.core_version }}"
+      - name: Mirror GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
+          IRIS_RELEASE_KEY_ENVELOPE: ${{ needs.shell-check.outputs.release_envelope }}
+          IRIS_RELEASE_ID: ${{ needs.shell-check.outputs.release_id }}
+          IRIS_INTERNAL_VERSION: ${{ needs.shell-check.outputs.internal_version }}
+          IRIS_SHELL_VERSION: ${{ needs.shell-check.outputs.shell_version }}
+          IRIS_CORE_VERSION: ${{ needs.shell-check.outputs.core_version }}
+          IRIS_SHELL_FINGERPRINT: ${{ needs.shell-check.outputs.shell_fingerprint }}
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          IRIS_STAGED_DIR: staged-installers
+        run: |
           mkdir -p release-assets
           cp build/secure-payload/payload.irp build/secure-payload/ui.irp electron/dist/build-info.json release-assets/
           cp staged-installers/* release-assets/
@@ -456,23 +474,4 @@ jobs:
           test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/latest" --jq '[.assets[] | select(.state != "uploaded")] | length')" = 0
       - name: Wipe shell-release workspace
         if: always()
-        run: rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" "$RUNNER_TEMP/iris-signing.p12" iris-source staged-installers release-assets build
-
-  shell-tag:
-    needs: [shell-check, shell-release]
-    permissions:
-      contents: read
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require tag deploy key
-        env:
-          IRIS_TAG_DEPLOY_KEY: ${{ secrets.IRIS_TAG_DEPLOY_KEY }}
-        run: test -n "$IRIS_TAG_DEPLOY_KEY"
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-        with:
-          repository: wuyilingwei/IRIS
-          ref: ${{ needs.shell-check.outputs.source_sha }}
-          ssh-key: ${{ secrets.IRIS_TAG_DEPLOY_KEY }}
-          persist-credentials: true
-      - name: Tag published shell and core source
-        run: bash .github/scripts/tag-build-commit.sh "shell-v${{ needs.shell-check.outputs.shell_version }}" "core-v${{ needs.shell-check.outputs.core_version }}"
+        run: rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" "$RUNNER_TEMP/iris-signing.p12" iris-source tag-source staged-installers release-assets build
