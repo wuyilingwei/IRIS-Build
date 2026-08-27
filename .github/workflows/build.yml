@@ -171,6 +171,7 @@ jobs:
       - name: Publish core payload
         if: steps.gate.outputs.shell_build != 'true'
         env:
+          IRIS_INTERNAL_VERSION: ${{ steps.meta.outputs.internal_version }}
           IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
           WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
         run: node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh upload-payload with-key
