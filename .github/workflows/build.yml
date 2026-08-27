@@ -84,7 +84,11 @@ jobs:
           persist-credentials: false
       - name: Use source scripts
         run: |
-          rsync -a --exclude=.git iris-source/ ./
+          shopt -s dotglob nullglob
+          for entry in iris-source/*; do
+            [[ "$entry" == "iris-source/.git" ]] && continue
+            cp -R "$entry" ./
+          done
           rm -rf certificates
       - name: Setup Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
@@ -251,7 +255,11 @@ jobs:
           persist-credentials: false
       - name: Use source scripts
         run: |
-          rsync -a --exclude=.git iris-source/ ./
+          shopt -s dotglob nullglob
+          for entry in iris-source/*; do
+            [[ "$entry" == "iris-source/.git" ]] && continue
+            cp -R "$entry" ./
+          done
           rm -rf certificates
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -332,7 +340,11 @@ jobs:
           ssh-key: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
           persist-credentials: false
       - run: |
-          rsync -a --exclude=.git iris-source/ ./
+          shopt -s dotglob nullglob
+          for entry in iris-source/*; do
+            [[ "$entry" == "iris-source/.git" ]] && continue
+            cp -R "$entry" ./
+          done
           rm -rf certificates
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -395,7 +407,11 @@ jobs:
           ssh-key: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
           persist-credentials: false
       - run: |
-          rsync -a --exclude=.git iris-source/ ./
+          shopt -s dotglob nullglob
+          for entry in iris-source/*; do
+            [[ "$entry" == "iris-source/.git" ]] && continue
+            cp -R "$entry" ./
+          done
           rm -rf certificates
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -492,7 +508,11 @@ jobs:
           ssh-key: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
           persist-credentials: false
       - run: |
-          rsync -a --exclude=.git iris-source/ ./
+          shopt -s dotglob nullglob
+          for entry in iris-source/*; do
+            [[ "$entry" == "iris-source/.git" ]] && continue
+            cp -R "$entry" ./
+          done
           rm -rf certificates
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
