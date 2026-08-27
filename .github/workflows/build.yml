@@ -183,7 +183,7 @@ jobs:
           ref: ${{ env.SOURCE_SHA }}
           path: tag-source
           ssh-key: ${{ secrets.IRIS_TAG_DEPLOY_KEY }}
-          persist-credentials: false
+          persist-credentials: true
       - name: Tag published core source
         if: steps.gate.outputs.shell_build != 'true'
         working-directory: tag-source
@@ -416,9 +416,8 @@ jobs:
         with:
           name: core-payload
           path: .
-      - name: Publish to license service and GitHub Release
+      - name: Publish to license service
         env:
-          GH_TOKEN: ${{ github.token }}
           IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
           IRIS_RELEASE_KEY_ENVELOPE: ${{ needs.shell-check.outputs.release_envelope }}
           IRIS_RELEASE_ID: ${{ needs.shell-check.outputs.release_id }}
@@ -440,23 +439,13 @@ jobs:
           ref: ${{ needs.shell-check.outputs.source_sha }}
           path: tag-source
           ssh-key: ${{ secrets.IRIS_TAG_DEPLOY_KEY }}
-          persist-credentials: false
+          persist-credentials: true
       - name: Tag published shell and core source
         working-directory: tag-source
         run: bash .github/scripts/tag-build-commit.sh "shell-v${{ needs.shell-check.outputs.shell_version }}" "core-v${{ needs.shell-check.outputs.core_version }}"
       - name: Mirror GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
-          IRIS_RELEASE_KEY_ENVELOPE: ${{ needs.shell-check.outputs.release_envelope }}
-          IRIS_RELEASE_ID: ${{ needs.shell-check.outputs.release_id }}
-          IRIS_INTERNAL_VERSION: ${{ needs.shell-check.outputs.internal_version }}
-          IRIS_SHELL_VERSION: ${{ needs.shell-check.outputs.shell_version }}
-          IRIS_CORE_VERSION: ${{ needs.shell-check.outputs.core_version }}
-          IRIS_SHELL_FINGERPRINT: ${{ needs.shell-check.outputs.shell_fingerprint }}
-          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
-          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
-          IRIS_STAGED_DIR: staged-installers
         run: |
           mkdir -p release-assets
           cp build/secure-payload/payload.irp build/secure-payload/ui.irp electron/dist/build-info.json release-assets/
