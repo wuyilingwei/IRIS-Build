@@ -9,3 +9,5 @@
 - 2026-08-31：复审发现 Core payload 的两个打包步骤未接收 PRO 公钥；开始补充信任锚和密钥对一致性检查。
 - 2026-08-31：`Pack core payload`、`Decrypt and pack core payload` 与 Shell installer 均使用同一配置公钥；两个私有上传步骤在上传前从私钥导出 Ed25519 原始公钥并恒定时间比较。
 - 2026-08-31：补充测试后，签名约束测试、PRO 工作流解析/行为测试、`actionlint` 与 `git diff --check` 全部通过。
+- 2026-08-31：复审发现标签部署密钥直到 PRO 上传后的 tag checkout 才会使用；开始将其纳入 Core 与 Shell 的入口预检。
+- 2026-08-31：Core 与 `shell-check` 的入口均已验证标签部署密钥非空；两项 shell 测试、`actionlint`、YAML 解析与 `git diff --check` 通过。

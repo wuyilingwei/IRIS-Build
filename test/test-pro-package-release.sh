@@ -37,6 +37,11 @@ ruby -r yaml -e '
 
   core_steps = jobs.fetch("core").fetch("steps")
   shell_check_steps = jobs.fetch("shell-check").fetch("steps")
+  [jobs.fetch("core"), jobs.fetch("shell-check")].each do |job|
+    validation = job.fetch("steps").find { |step| step["name"] == "Validate inputs and secrets" }
+    raise "missing release input validation" unless validation
+    raise "tag deployment key must be checked before release work" unless validation.fetch("env")["IRIS_TAG_DEPLOY_KEY"] == "${{ secrets.IRIS_TAG_DEPLOY_KEY }}" && validation.fetch("run").include?("IRIS_TAG_DEPLOY_KEY")
+  end
   [core_steps, shell_check_steps].each do |steps|
     static = index_of(steps, "Run release static contract check")
     behavior = index_of(steps, "Run release behavior gate")
