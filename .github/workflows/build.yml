@@ -220,8 +220,8 @@ jobs:
           IRIS_BUILD_DEPLOY_KEY: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
           IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
           IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
-          IRIS_SIGNING_CERT_PASSWORD: ${{ secrets.IRIS_SIGNING_CERT_PASSWORD }}
-          IRIS_SIGNING_CERT_BASE64: ${{ secrets.IRIS_SIGNING_CERT_BASE64 }}
+          IRIS_SIGNING_CERT_PASSWORD: ${{ secrets.IRIS_MACOS_SIGNING_PASSWORD }}
+          IRIS_SIGNING_CERT_BASE64: ${{ secrets.IRIS_MACOS_SIGNING_P12_BASE64 }}
         run: |
           [[ "$SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || exit 1
           [[ -n "$IRIS_BUILD_DEPLOY_KEY" && -n "$IRIS_RELEASE_UPLOAD_TOKEN" && -n "$IRIS_RELEASE_KEY_TRANSFER_KEY" && -n "$IRIS_SIGNING_CERT_PASSWORD" && -n "$IRIS_SIGNING_CERT_BASE64" ]] || { echo 'required secrets are missing' >&2; exit 1; }
@@ -335,7 +335,7 @@ jobs:
       - name: Prepare temporary signing certificate
         if: matrix.os != 'ubuntu-latest'
         env:
-          IRIS_SIGNING_CERT_BASE64: ${{ secrets.IRIS_SIGNING_CERT_BASE64 }}
+          IRIS_SIGNING_CERT_BASE64: ${{ secrets.IRIS_MACOS_SIGNING_P12_BASE64 }}
         run: node scripts/prepare-release-signing.mjs
       - name: Build installer
         env:
@@ -350,8 +350,8 @@ jobs:
           IRIS_LICENSE_BUILD_API_ORIGIN: https://iris.wuyilingwei.com
           IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
-          CSC_KEY_PASSWORD: ${{ matrix.os != 'ubuntu-latest' && secrets.IRIS_SIGNING_CERT_PASSWORD || '' }}
-          IRIS_SIGNING_CERT_PASSWORD: ${{ matrix.os != 'ubuntu-latest' && secrets.IRIS_SIGNING_CERT_PASSWORD || '' }}
+          CSC_KEY_PASSWORD: ${{ matrix.os != 'ubuntu-latest' && secrets.IRIS_MACOS_SIGNING_PASSWORD || '' }}
+          IRIS_SIGNING_CERT_PASSWORD: ${{ matrix.os != 'ubuntu-latest' && secrets.IRIS_MACOS_SIGNING_PASSWORD || '' }}
           DIST_CMD: ${{ matrix.dist_cmd }}
           EP_PREPACKAGED: ''
           NODE_OPTIONS: --max-old-space-size=4096
@@ -366,7 +366,7 @@ jobs:
       - name: Verify signed installers
         if: matrix.os != 'ubuntu-latest'
         env:
-          IRIS_SIGNING_CERT_PASSWORD: ${{ secrets.IRIS_SIGNING_CERT_PASSWORD }}
+          IRIS_SIGNING_CERT_PASSWORD: ${{ secrets.IRIS_MACOS_SIGNING_PASSWORD }}
         run: node scripts/verify-release-signing.mjs --artifact-dir staged-installers
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
