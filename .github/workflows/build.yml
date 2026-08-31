@@ -339,6 +339,17 @@ jobs:
         env:
           IRIS_SIGNING_CERT_PASSWORD: ${{ secrets.IRIS_SIGNING_PASSWORD }}
         run: node scripts/verify-release-signing.mjs
+      - name: Trust IRIS signing root for macOS build
+        if: matrix.os == 'macos-latest'
+        env:
+          IRIS_SIGNING_ROOT_SHA1: 8601bb53dfc44d12d26f0e513ced84673b874cea
+          IRIS_SIGNING_ROOT_PATH: certificates/iris-internal-signing-root.cert.pem
+        run: |
+          set -euo pipefail
+          [[ -r "$IRIS_SIGNING_ROOT_PATH" ]] || { echo 'tracked signing root is missing' >&2; exit 1; }
+          actual_sha1="$(/usr/bin/openssl x509 -in "$IRIS_SIGNING_ROOT_PATH" -noout -fingerprint -sha1 | /usr/bin/awk -F= '{gsub(/:/, "", $2); print tolower($2)}')"
+          [[ "$actual_sha1" == "$IRIS_SIGNING_ROOT_SHA1" ]] || { echo 'tracked signing root SHA-1 does not match the expected root' >&2; exit 1; }
+          /usr/bin/perl -e 'alarm shift @ARGV; exec @ARGV' 30 /usr/bin/sudo -n /usr/bin/security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$IRIS_SIGNING_ROOT_PATH"
       - name: Build installer
         env:
           IRIS_SHELL_VERSION: ${{ needs.shell-check.outputs.shell_version }}
@@ -379,6 +390,16 @@ jobs:
       - name: Wipe build workspace and signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/iris-signing.p12"; rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" iris-source staged-installers build
+      - name: Remove macOS signing root
+        if: always() && matrix.os == 'macos-latest'
+        env:
+          IRIS_SIGNING_ROOT_SHA1: 8601bb53dfc44d12d26f0e513ced84673b874cea
+        run: |
+          set -euo pipefail
+          /usr/bin/perl -e 'alarm shift @ARGV; exec @ARGV' 30 /usr/bin/sudo -n /usr/bin/security delete-certificate -Z "$IRIS_SIGNING_ROOT_SHA1" /Library/Keychains/System.keychain || {
+            status=$?
+            if [[ "$status" -ne 1 ]]; then exit "$status"; fi
+          }
 
   shell-release:
     needs: [shell-check, shell-build]
