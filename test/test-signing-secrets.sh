@@ -3,72 +3,85 @@ set -euo pipefail
 
 workflow="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.github/workflows/build.yml"
 
-if rg -n 'IRIS_MACOS_SIGNING_P12_BASE64|IRIS_MACOS_SIGNING_PASSWORD' "$workflow"; then
-  echo 'workflow still references platform-specific signing secrets' >&2
+if rg -n 'IRIS_MACOS_SIGNING_P12_BASE64|IRIS_MACOS_SIGNING_PASSWORD|IRIS_LEGACY|IRIS_SIGNING_MIGRATION_PHASE|IRIS_SIGNING_PROFILE|8601bb53dfc44d12d26f0e513ced84673b874cea|iris-internal-signing-root\.cert\.pem|legacy-signing-source|iris-internal-signing-100y\.p12|9308241a' "$workflow"; then
+  echo 'workflow must use only the unified retained signing identity' >&2
   exit 1
 fi
 
 rg -q 'secrets\.IRIS_SIGNING_P12_BASE64' "$workflow"
 rg -q 'secrets\.IRIS_SIGNING_PASSWORD' "$workflow"
-rg -q 'secrets\.IRIS_LEGACY_BRIDGE_P12_BASE64' "$workflow"
-rg -q 'secrets\.IRIS_LEGACY_BRIDGE_PASSWORD' "$workflow"
-rg -q 'IRIS_SIGNING_MIGRATION_PHASE: legacy-bridge' "$workflow"
-rg -q 'IRIS_LEGACY_BRIDGE_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78' "$workflow"
-rg -q 'name: Validate signing migration phase' "$workflow"
-rg -q 'IRIS_SIGNING_CERT_BASE64: \$\{\{ secrets\.IRIS_LEGACY_BRIDGE_P12_BASE64 \}\}' "$workflow"
-if rg -n 'legacy-signing-source|iris-legacy-bridge\.p12|9308241a|iris-internal-signing-100y\.p12' "$workflow"; then
-  echo 'legacy bridge must use the dedicated secret rather than a historical private bundle' >&2
-  exit 1
-fi
-rg -q "IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge'" "$workflow"
-rg -q "IRIS_SIGNING_MIGRATION_PHASE == 'current'" "$workflow"
-rg -q 'IRIS_SIGNING_PROFILE: \$\{\{ env\.IRIS_SIGNING_MIGRATION_PHASE == '\''legacy-bridge'\'' && '\''legacy-bridge'\'' \|\| '\''current'\'' \}\}' "$workflow"
-if rg -n "source_sha == '9308241a|source_sha != '9308241a" "$workflow"; then
-  echo 'legacy bridge must not select a historical source revision' >&2
-  exit 1
-fi
-rg -q 'name: Trust legacy-bridge signing root for macOS build' "$workflow"
-rg -q 'name: Remove legacy-bridge signing root' "$workflow"
-if ! awk '
-  /name: Prepare legacy-bridge signing certificate/ { material = NR }
-  /name: Verify signing identity/ { verify = NR }
-  END { exit !(material < verify) }
-' "$workflow"; then
-  echo 'legacy bridge material and signing preparation must precede verification' >&2
-  exit 1
-fi
-
-rg -q "if: matrix.os == 'macos-latest'" "$workflow"
-rg -q 'IRIS_LEGACY_BRIDGE_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78' "$workflow"
-rg -q 'IRIS_LEGACY_BRIDGE_ROOT_PATH: certificates/iris-internal-signing-legacy-bridge.cert.pem' "$workflow"
-rg -q 'IRIS_SIGNING_ROOT_SHA1: 8601bb53dfc44d12d26f0e513ced84673b874cea' "$workflow"
-rg -q 'IRIS_SIGNING_ROOT_PATH: certificates/iris-internal-signing-root.cert.pem' "$workflow"
+rg -q 'IRIS_SIGNING_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78' "$workflow"
+rg -q 'IRIS_SIGNING_ROOT_PATH: certificates/iris-internal-signing-100y\.cert\.pem' "$workflow"
+rg -q 'name: Prepare signing certificate' "$workflow"
+rg -q 'name: Verify signing identity' "$workflow"
+rg -q 'name: Trust signing root for macOS build' "$workflow"
+rg -q 'name: Remove signing root' "$workflow"
 rg -q 'sudo -n /usr/bin/security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain' "$workflow"
-rg -q 'sudo -n /usr/bin/security delete-certificate -Z "\$IRIS_LEGACY_BRIDGE_ROOT_SHA1" /Library/Keychains/System.keychain' "$workflow"
+rg -q 'sudo -n /usr/bin/security delete-certificate -Z "\$IRIS_SIGNING_ROOT_SHA1" /Library/Keychains/System.keychain' "$workflow"
 rg -q "if: always\(\) && matrix.os == 'macos-latest'" "$workflow"
-test "$(rg -c '/usr/bin/perl -e' "$workflow")" -eq 4
+test "$(rg -c '/usr/bin/perl -e' "$workflow")" -eq 2
 rg -q 'name: Retain staged installers for failed-build diagnosis' "$workflow"
 rg -q "if: always\(\) && hashFiles\('staged-installers/\*\*'\) != ''" "$workflow"
-if ! awk '
-  /name: Verify signed installers/ { verify = NR }
-  /name: Retain staged installers for failed-build diagnosis/ { retain = NR }
-  END { exit !(retain > verify) }
-' "$workflow"; then
-  echo 'diagnostic installer retention must follow signature verification' >&2
-  exit 1
-fi
-if ! awk '
-  /name: Retain staged installers for failed-build diagnosis/ { in_retain = 1 }
-  in_retain && /if-no-files-found: error/ { found = 1; exit }
-  in_retain && /^      - name:/ && !/Retain staged installers/ { exit }
-  END { exit !found }
-' "$workflow"; then
-  echo 'diagnostic installer retention must keep the empty-path error gate' >&2
-  exit 1
-fi
+
+ruby -r yaml -e '
+  workflow = YAML.load_file(ARGV.fetch(0))
+  jobs = workflow.fetch("jobs")
+
+  def index_of(steps, name)
+    index = steps.index { |step| step["name"] == name }
+    raise "missing step: #{name}" unless index
+    index
+  end
+
+  shell_check = jobs.fetch("shell-check")
+  validation = shell_check.fetch("steps").find { |step| step["name"] == "Validate inputs and secrets" }
+  raise "shell-check signing validation is missing" unless validation
+  env = validation.fetch("env")
+  raise "shell-check does not use unified P12 secret" unless env["IRIS_SIGNING_CERT_BASE64"] == "${{ secrets.IRIS_SIGNING_P12_BASE64 }}"
+  raise "shell-check does not use unified P12 password" unless env["IRIS_SIGNING_CERT_PASSWORD"] == "${{ secrets.IRIS_SIGNING_PASSWORD }}"
+  run = validation.fetch("run")
+  raise "shell-check does not reject missing unified P12 secret" unless run.include?("IRIS_SIGNING_CERT_BASE64")
+  raise "shell-check does not reject missing unified P12 password" unless run.include?("IRIS_SIGNING_CERT_PASSWORD")
+
+  build_steps = jobs.fetch("shell-build").fetch("steps")
+  prepare = index_of(build_steps, "Prepare signing certificate")
+  verify = index_of(build_steps, "Verify signing identity")
+  trust = index_of(build_steps, "Trust signing root for macOS build")
+  installer = index_of(build_steps, "Build installer")
+  cleanup = index_of(build_steps, "Remove signing root")
+  raise "signing certificate must be prepared before verification" unless prepare < verify
+  raise "macOS root must be trusted before installer build" unless trust < installer
+  raise "macOS root cleanup must follow installer build" unless installer < cleanup
+  prepare_env = build_steps.fetch(prepare).fetch("env")
+  raise "build does not use unified P12 secret" unless prepare_env["IRIS_SIGNING_CERT_BASE64"] == "${{ secrets.IRIS_SIGNING_P12_BASE64 }}"
+  verify_env = build_steps.fetch(verify).fetch("env")
+  raise "identity verification does not use unified P12 password" unless verify_env["IRIS_SIGNING_CERT_PASSWORD"] == "${{ secrets.IRIS_SIGNING_PASSWORD }}"
+  installer_env = build_steps.fetch(installer).fetch("env")
+  raise "installer does not use unified P12 password" unless installer_env["CSC_KEY_PASSWORD"] == "${{ matrix.os != '\''ubuntu-latest'\'' && secrets.IRIS_SIGNING_PASSWORD || '\'''\'' }}"
+  verify_installer = build_steps.fetch(index_of(build_steps, "Verify signed installers")).fetch("env")
+  raise "installer verification does not use unified P12 password" unless verify_installer["IRIS_SIGNING_CERT_PASSWORD"] == "${{ secrets.IRIS_SIGNING_PASSWORD }}"
+  installer_verification = index_of(build_steps, "Verify signed installers")
+  retain = index_of(build_steps, "Retain staged installers for failed-build diagnosis")
+  raise "diagnostic installer retention must follow signature verification" unless installer_verification < retain
+  retain_step = build_steps.fetch(retain)
+  raise "diagnostic installer retention must keep the empty-path error gate" unless retain_step.fetch("with")["if-no-files-found"] == "error"
+
+  release = jobs.fetch("shell-release")
+  raise "shell release must require shell-check and shell-build" unless release.fetch("needs") == ["shell-check", "shell-build"]
+  release_steps = release.fetch("steps")
+  publish = index_of(release_steps, "Publish to license service")
+  tags = index_of(release_steps, "Tag published shell and core source")
+  mirror = index_of(release_steps, "Mirror GitHub Release")
+  raise "release ordering is not atomic" unless publish < tags && tags < mirror
+  publish_run = release_steps.fetch(publish).fetch("run")
+  payload = publish_run.index("upload-payload with-key")
+  assets = publish_run.index("publish-shell-assets")
+  raise "payload must publish before shell assets" unless payload && assets && payload < assets
+' "$workflow"
+
 if rg -n 'add-trusted-cert.*IRIS_SIGNING_P12|add-trusted-cert.*iris-signing\.p12' "$workflow"; then
-  echo 'workflow must trust the public root, not the P12 leaf' >&2
+  echo 'workflow must trust the tracked public certificate, not the P12 leaf' >&2
   exit 1
 fi
 
-echo 'signing secrets and macOS ephemeral root trust are constrained correctly'
+echo 'unified signing identity and release ordering are constrained correctly'
