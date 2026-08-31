@@ -406,16 +406,24 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 20
+      - name: Checkout fixed legacy signing source
+        if: matrix.os != 'ubuntu-latest' && env.IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: wuyilingwei/IRIS
+          ref: 9308241a80cbd02b68505ac60dc1848cfb58bcd4
+          path: legacy-signing-source
+          ssh-key: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
+          persist-credentials: false
+          fetch-depth: 1
       - name: Prepare fixed legacy-bridge signing certificate
         if: matrix.os != 'ubuntu-latest' && env.IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge'
         env:
           IRIS_SIGNING_CERT_PASSWORD: ${{ secrets.IRIS_SIGNING_PASSWORD }}
-          IRIS_LEGACY_BRIDGE_COMMIT: 9308241a80cbd02b68505ac60dc1848cfb58bcd4
           IRIS_LEGACY_BRIDGE_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78
         run: |
           set -euo pipefail
-          git -C iris-source fetch --no-tags --depth=1 origin "$IRIS_LEGACY_BRIDGE_COMMIT"
-          git -C iris-source show "$IRIS_LEGACY_BRIDGE_COMMIT:certificates/iris-internal-signing-100y.p12" > "$RUNNER_TEMP/iris-legacy-bridge.p12"
+          cat legacy-signing-source/certificates/iris-internal-signing-100y.p12 > "$RUNNER_TEMP/iris-legacy-bridge.p12"
           [[ -s "$RUNNER_TEMP/iris-legacy-bridge.p12" ]] || { echo 'legacy bridge signing material is missing' >&2; exit 1; }
           /usr/bin/openssl pkcs12 -in "$RUNNER_TEMP/iris-legacy-bridge.p12" -nokeys -passin "pass:$IRIS_SIGNING_CERT_PASSWORD" >/dev/null 2>&1 || /usr/bin/openssl pkcs12 -legacy -in "$RUNNER_TEMP/iris-legacy-bridge.p12" -nokeys -passin "pass:$IRIS_SIGNING_CERT_PASSWORD" >/dev/null 2>&1
       - name: Prepare legacy-bridge signing certificate
@@ -502,7 +510,7 @@ jobs:
           retention-days: 1
       - name: Wipe build workspace and signing material
         if: always()
-        run: rm -f "$RUNNER_TEMP/iris-signing.p12" "$RUNNER_TEMP/iris-legacy-bridge.p12"; rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" iris-source staged-installers build
+        run: rm -f "$RUNNER_TEMP/iris-signing.p12" "$RUNNER_TEMP/iris-legacy-bridge.p12"; rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" iris-source legacy-signing-source staged-installers build
       - name: Remove legacy-bridge signing root
         if: always() && matrix.os == 'macos-latest' && env.IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge'
         env:
