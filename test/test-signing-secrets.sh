@@ -18,7 +18,7 @@ rg -q 'IRIS_SIGNING_ROOT_SHA1: 8601bb53dfc44d12d26f0e513ced84673b874cea' "$workf
 rg -q 'IRIS_SIGNING_ROOT_PATH: certificates/iris-internal-signing-root.cert.pem' "$workflow"
 rg -q 'sudo -n /usr/bin/security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain' "$workflow"
 rg -q 'sudo -n /usr/bin/security delete-certificate -Z "\$IRIS_SIGNING_ROOT_SHA1" /Library/Keychains/System.keychain' "$workflow"
-test "$(rg -c "if: matrix.os == 'macos-latest'" "$workflow")" -eq 2
+rg -q "if: always\(\) && matrix.os == 'macos-latest'" "$workflow"
 test "$(rg -c '/usr/bin/perl -e' "$workflow")" -eq 2
 if rg -n 'add-trusted-cert.*IRIS_SIGNING_P12|add-trusted-cert.*iris-signing\.p12' "$workflow"; then
   echo 'workflow must trust the public root, not the P12 leaf' >&2
