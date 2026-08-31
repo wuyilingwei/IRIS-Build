@@ -54,9 +54,11 @@ jobs:
         env:
           IRIS_BUILD_DEPLOY_KEY: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
           IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          IRIS_PRO_PACKAGE_SIGNING_PRIVATE_KEY: ${{ secrets.IRIS_PRO_PACKAGE_SIGNING_PRIVATE_KEY }}
+          IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY: ${{ secrets.IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY }}
         run: |
           [[ "$SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || { echo 'source_sha must be a 40-character commit SHA' >&2; exit 1; }
-          [[ -n "$IRIS_BUILD_DEPLOY_KEY" && -n "$IRIS_RELEASE_UPLOAD_TOKEN" ]] || { echo 'required secrets are missing' >&2; exit 1; }
+          [[ -n "$IRIS_BUILD_DEPLOY_KEY" && -n "$IRIS_RELEASE_UPLOAD_TOKEN" && -n "$IRIS_PRO_PACKAGE_SIGNING_PRIVATE_KEY" && -n "$IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY" ]] || { echo 'required secrets are missing' >&2; exit 1; }
       - name: Checkout exact private source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
@@ -135,11 +137,34 @@ jobs:
           WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
         run: |
           node .github/scripts/run-quiet.mjs -- bash -c 'npm run typecheck:renderer && npm run build:main'
+      - name: Run release static contract check
+        if: steps.gate.outputs.shell_build != 'true'
+        env:
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: node .github/scripts/run-quiet.mjs -- npm run test:release-static
       - name: Run release behavior gate
         if: steps.gate.outputs.shell_build != 'true'
         env:
           WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
         run: node .github/scripts/run-quiet.mjs -- xvfb-run -a npm run test:release-behavior
+      - name: Pack and upload private PRO package
+        if: steps.gate.outputs.shell_build != 'true'
+        env:
+          IRIS_PRO_PACKAGE_ID: iris.online-sync
+          IRIS_PRO_PACKAGE_VERSION: ${{ steps.number.outputs.core_version }}
+          IRIS_PRO_PACKAGE_MIN_CORE_VERSION: ${{ steps.number.outputs.core_version }}
+          IRIS_PRO_PACKAGE_SIGNING_PRIVATE_KEY: ${{ secrets.IRIS_PRO_PACKAGE_SIGNING_PRIVATE_KEY }}
+          IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY: ${{ secrets.IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY }}
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$IRIS_PRO_PACKAGE_ID" == 'iris.online-sync' && -n "$IRIS_PRO_PACKAGE_SIGNING_PRIVATE_KEY" && -n "$IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY" ]] || { echo 'required PRO package configuration is missing' >&2; exit 1; }
+          IRIS_PRO_PACKAGE_KEY="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url"))')"
+          export IRIS_PRO_PACKAGE_KEY
+          trap 'unset IRIS_PRO_PACKAGE_KEY; rm -rf build/pro-packages/iris.online-sync' EXIT
+          npm run pro:pack
+          node .github/scripts/upload-pro-package.mjs
       - name: Generate core release key
         if: steps.gate.outputs.shell_build != 'true'
         env:
@@ -221,9 +246,11 @@ jobs:
           IRIS_RELEASE_KEY_TRANSFER_KEY: ${{ secrets.IRIS_RELEASE_KEY_TRANSFER_KEY }}
           IRIS_SIGNING_CERT_PASSWORD: ${{ secrets.IRIS_SIGNING_PASSWORD }}
           IRIS_SIGNING_CERT_BASE64: ${{ secrets.IRIS_SIGNING_P12_BASE64 }}
+          IRIS_PRO_PACKAGE_SIGNING_PRIVATE_KEY: ${{ secrets.IRIS_PRO_PACKAGE_SIGNING_PRIVATE_KEY }}
+          IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY: ${{ secrets.IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY }}
         run: |
           [[ "$SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || exit 1
-          [[ -n "$IRIS_BUILD_DEPLOY_KEY" && -n "$IRIS_RELEASE_UPLOAD_TOKEN" && -n "$IRIS_RELEASE_KEY_TRANSFER_KEY" && -n "$IRIS_SIGNING_CERT_PASSWORD" && -n "$IRIS_SIGNING_CERT_BASE64" ]] || { echo 'required secrets are missing' >&2; exit 1; }
+          [[ -n "$IRIS_BUILD_DEPLOY_KEY" && -n "$IRIS_RELEASE_UPLOAD_TOKEN" && -n "$IRIS_RELEASE_KEY_TRANSFER_KEY" && -n "$IRIS_SIGNING_CERT_PASSWORD" && -n "$IRIS_SIGNING_CERT_BASE64" && -n "$IRIS_PRO_PACKAGE_SIGNING_PRIVATE_KEY" && -n "$IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY" ]] || { echo 'required secrets are missing' >&2; exit 1; }
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: wuyilingwei/IRIS
@@ -257,10 +284,31 @@ jobs:
           node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh shell-fingerprint
           node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh core-build-number
           node .github/scripts/run-quiet.mjs -- bash -c 'npm run typecheck:renderer && npm run build:main'
+      - name: Run release static contract check
+        env:
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: node .github/scripts/run-quiet.mjs -- npm run test:release-static
       - name: Run release behavior gate
         env:
           WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
         run: node .github/scripts/run-quiet.mjs -- xvfb-run -a npm run test:release-behavior
+      - name: Pack and upload private PRO package
+        env:
+          IRIS_PRO_PACKAGE_ID: iris.online-sync
+          IRIS_PRO_PACKAGE_VERSION: ${{ steps.prepare.outputs.core_version }}
+          IRIS_PRO_PACKAGE_MIN_CORE_VERSION: ${{ steps.prepare.outputs.core_version }}
+          IRIS_PRO_PACKAGE_SIGNING_PRIVATE_KEY: ${{ secrets.IRIS_PRO_PACKAGE_SIGNING_PRIVATE_KEY }}
+          IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY: ${{ secrets.IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY }}
+          IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+          WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$IRIS_PRO_PACKAGE_ID" == 'iris.online-sync' && -n "$IRIS_PRO_PACKAGE_SIGNING_PRIVATE_KEY" && -n "$IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY" ]] || { echo 'required PRO package configuration is missing' >&2; exit 1; }
+          IRIS_PRO_PACKAGE_KEY="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url"))')"
+          export IRIS_PRO_PACKAGE_KEY
+          trap 'unset IRIS_PRO_PACKAGE_KEY; rm -rf build/pro-packages/iris.online-sync' EXIT
+          npm run pro:pack
+          node .github/scripts/upload-pro-package.mjs
       - name: Generate release key
         id: key
         env:
@@ -360,6 +408,7 @@ jobs:
           IRIS_CORE_VERSION: ${{ needs.shell-check.outputs.core_version }}
           IRIS_INTERNAL_VERSION: ${{ needs.shell-check.outputs.internal_version }}
           IRIS_SOURCE_SHA: ${{ needs.shell-check.outputs.source_sha }}
+          IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY: ${{ secrets.IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY }}
           IRIS_LICENSE_BUILD_API_ORIGIN: https://iris.wuyilingwei.com
           IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
