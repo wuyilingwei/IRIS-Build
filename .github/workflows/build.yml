@@ -440,7 +440,7 @@ jobs:
         if: matrix.os == 'macos-latest' && env.IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge'
         env:
           IRIS_LEGACY_BRIDGE_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78
-          IRIS_LEGACY_BRIDGE_ROOT_PATH: certificates/iris-internal-signing-100y.cert.pem
+          IRIS_LEGACY_BRIDGE_ROOT_PATH: certificates/iris-internal-signing-legacy-bridge.cert.pem
         run: |
           set -euo pipefail
           [[ -r "$IRIS_LEGACY_BRIDGE_ROOT_PATH" ]] || { echo 'legacy bridge public certificate is missing' >&2; exit 1; }

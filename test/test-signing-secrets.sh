@@ -49,7 +49,7 @@ fi
 
 rg -q "if: matrix.os == 'macos-latest'" "$workflow"
 rg -q 'IRIS_LEGACY_BRIDGE_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78' "$workflow"
-rg -q 'IRIS_LEGACY_BRIDGE_ROOT_PATH: certificates/iris-internal-signing-100y.cert.pem' "$workflow"
+rg -q 'IRIS_LEGACY_BRIDGE_ROOT_PATH: certificates/iris-internal-signing-legacy-bridge.cert.pem' "$workflow"
 rg -q 'IRIS_SIGNING_ROOT_SHA1: 8601bb53dfc44d12d26f0e513ced84673b874cea' "$workflow"
 rg -q 'IRIS_SIGNING_ROOT_PATH: certificates/iris-internal-signing-root.cert.pem' "$workflow"
 rg -q 'sudo -n /usr/bin/security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain' "$workflow"
