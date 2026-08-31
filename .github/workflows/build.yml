@@ -32,6 +32,7 @@ env:
   IRIS_LICENSE_API_URL: https://iris.wuyilingwei.com
   IRIS_LICENSE_BUILD_API_ORIGIN: https://iris.wuyilingwei.com
   WORKFLOW_REPORT_API: https://iris.wuyilingwei.com/api/v1/internal/workflow-reports
+  IRIS_SIGNING_MIGRATION_PHASE: legacy-bridge
 
 defaults:
   run:
@@ -405,18 +406,57 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 20
-      - name: Prepare temporary signing certificate
-        if: matrix.os != 'ubuntu-latest'
+      - name: Prepare fixed legacy-bridge signing certificate
+        if: matrix.os != 'ubuntu-latest' && env.IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge'
+        env:
+          IRIS_SIGNING_CERT_PASSWORD: ${{ secrets.IRIS_SIGNING_PASSWORD }}
+          IRIS_LEGACY_BRIDGE_COMMIT: 9308241a80cbd02b68505ac60dc1848cfb58bcd4
+          IRIS_LEGACY_BRIDGE_SUPPORT_COMMIT: c77276bfe1b8973313fe03051cb6face6bb576d9
+          IRIS_LEGACY_BRIDGE_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78
+        run: |
+          set -euo pipefail
+          git -C iris-source fetch --no-tags --depth=1 origin "$IRIS_LEGACY_BRIDGE_COMMIT" "$IRIS_LEGACY_BRIDGE_SUPPORT_COMMIT"
+          for file in electron/bootstrap/signing-profile.cjs electron/bootstrap/windows-signature.cjs scripts/bundle-assets.mjs scripts/internal-macos-sign.cjs scripts/prepare-release-signing.mjs scripts/verify-release-signing.mjs; do
+            mkdir -p "$(dirname "$file")"
+            git -C iris-source show "$IRIS_LEGACY_BRIDGE_SUPPORT_COMMIT:$file" > "$file"
+          done
+          git -C iris-source show "$IRIS_LEGACY_BRIDGE_COMMIT:certificates/iris-internal-signing-100y.p12" > "$RUNNER_TEMP/iris-legacy-bridge.p12"
+          git -C iris-source show "$IRIS_LEGACY_BRIDGE_COMMIT:certificates/iris-internal-signing-100y.cert.pem" > "$RUNNER_TEMP/iris-legacy-bridge.cert.pem"
+          [[ -s "$RUNNER_TEMP/iris-legacy-bridge.p12" && -s "$RUNNER_TEMP/iris-legacy-bridge.cert.pem" ]] || { echo 'legacy bridge signing material is missing' >&2; exit 1; }
+          actual_sha1="$(/usr/bin/openssl x509 -in "$RUNNER_TEMP/iris-legacy-bridge.cert.pem" -noout -fingerprint -sha1 | /usr/bin/awk -F= '{gsub(/:/, "", $2); print tolower($2)}')"
+          [[ "$actual_sha1" == "$IRIS_LEGACY_BRIDGE_ROOT_SHA1" ]] || { echo 'legacy bridge public certificate does not match the fixed root' >&2; exit 1; }
+          /usr/bin/openssl pkcs12 -in "$RUNNER_TEMP/iris-legacy-bridge.p12" -nokeys -passin "pass:$IRIS_SIGNING_CERT_PASSWORD" >/dev/null 2>&1 || /usr/bin/openssl pkcs12 -legacy -in "$RUNNER_TEMP/iris-legacy-bridge.p12" -nokeys -passin "pass:$IRIS_SIGNING_CERT_PASSWORD" >/dev/null 2>&1
+      - name: Prepare legacy-bridge signing certificate
+        if: matrix.os != 'ubuntu-latest' && env.IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge'
+        env:
+          IRIS_SIGNING_CERT_FILE: ${{ runner.temp }}/iris-legacy-bridge.p12
+          IRIS_SIGNING_PROFILE: legacy-bridge
+        run: node scripts/prepare-release-signing.mjs
+      - name: Prepare current signing certificate
+        if: matrix.os != 'ubuntu-latest' && env.IRIS_SIGNING_MIGRATION_PHASE == 'current'
         env:
           IRIS_SIGNING_CERT_BASE64: ${{ secrets.IRIS_SIGNING_P12_BASE64 }}
+          IRIS_SIGNING_PROFILE: current
         run: node scripts/prepare-release-signing.mjs
       - name: Verify signing identity
         if: matrix.os != 'ubuntu-latest'
         env:
           IRIS_SIGNING_CERT_PASSWORD: ${{ secrets.IRIS_SIGNING_PASSWORD }}
+          IRIS_SIGNING_PROFILE: ${{ env.IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge' && 'legacy-bridge' || 'current' }}
         run: node scripts/verify-release-signing.mjs
-      - name: Trust IRIS signing root for macOS build
-        if: matrix.os == 'macos-latest'
+      - name: Trust legacy-bridge signing root for macOS build
+        if: matrix.os == 'macos-latest' && env.IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge'
+        env:
+          IRIS_LEGACY_BRIDGE_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78
+          IRIS_LEGACY_BRIDGE_ROOT_PATH: ${{ runner.temp }}/iris-legacy-bridge.cert.pem
+        run: |
+          set -euo pipefail
+          [[ -r "$IRIS_LEGACY_BRIDGE_ROOT_PATH" ]] || { echo 'legacy bridge public certificate is missing' >&2; exit 1; }
+          actual_sha1="$(/usr/bin/openssl x509 -in "$IRIS_LEGACY_BRIDGE_ROOT_PATH" -noout -fingerprint -sha1 | /usr/bin/awk -F= '{gsub(/:/, "", $2); print tolower($2)}')"
+          [[ "$actual_sha1" == "$IRIS_LEGACY_BRIDGE_ROOT_SHA1" ]] || { echo 'legacy bridge public certificate does not match the fixed root' >&2; exit 1; }
+          /usr/bin/perl -e 'alarm shift @ARGV; exec @ARGV' 30 /usr/bin/sudo -n /usr/bin/security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$IRIS_LEGACY_BRIDGE_ROOT_PATH"
+      - name: Trust current signing root for macOS build
+        if: matrix.os == 'macos-latest' && env.IRIS_SIGNING_MIGRATION_PHASE == 'current'
         env:
           IRIS_SIGNING_ROOT_SHA1: 8601bb53dfc44d12d26f0e513ced84673b874cea
           IRIS_SIGNING_ROOT_PATH: certificates/iris-internal-signing-root.cert.pem
@@ -442,6 +482,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: false
           CSC_KEY_PASSWORD: ${{ matrix.os != 'ubuntu-latest' && secrets.IRIS_SIGNING_PASSWORD || '' }}
           IRIS_SIGNING_CERT_PASSWORD: ${{ matrix.os != 'ubuntu-latest' && secrets.IRIS_SIGNING_PASSWORD || '' }}
+          IRIS_SIGNING_PROFILE: ${{ env.IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge' && 'legacy-bridge' || 'current' }}
           DIST_CMD: ${{ matrix.dist_cmd }}
           EP_PREPACKAGED: ''
           NODE_OPTIONS: --max-old-space-size=4096
@@ -457,6 +498,7 @@ jobs:
         if: matrix.os != 'ubuntu-latest'
         env:
           IRIS_SIGNING_CERT_PASSWORD: ${{ secrets.IRIS_SIGNING_PASSWORD }}
+          IRIS_SIGNING_PROFILE: ${{ env.IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge' && 'legacy-bridge' || 'current' }}
         run: node scripts/verify-release-signing.mjs --artifact-dir staged-installers
       - name: Retain staged installers for failed-build diagnosis
         if: always() && hashFiles('staged-installers/**') != ''
@@ -468,9 +510,19 @@ jobs:
           retention-days: 1
       - name: Wipe build workspace and signing material
         if: always()
-        run: rm -f "$RUNNER_TEMP/iris-signing.p12"; rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" iris-source staged-installers build
-      - name: Remove macOS signing root
-        if: always() && matrix.os == 'macos-latest'
+        run: rm -f "$RUNNER_TEMP/iris-signing.p12" "$RUNNER_TEMP/iris-legacy-bridge.p12" "$RUNNER_TEMP/iris-legacy-bridge.cert.pem"; rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" iris-source staged-installers build
+      - name: Remove legacy-bridge signing root
+        if: always() && matrix.os == 'macos-latest' && env.IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge'
+        env:
+          IRIS_LEGACY_BRIDGE_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78
+        run: |
+          set -euo pipefail
+          /usr/bin/perl -e 'alarm shift @ARGV; exec @ARGV' 30 /usr/bin/sudo -n /usr/bin/security delete-certificate -Z "$IRIS_LEGACY_BRIDGE_ROOT_SHA1" /Library/Keychains/System.keychain || {
+            status=$?
+            if [[ "$status" -ne 1 ]]; then exit "$status"; fi
+          }
+      - name: Remove current signing root
+        if: always() && matrix.os == 'macos-latest' && env.IRIS_SIGNING_MIGRATION_PHASE == 'current'
         env:
           IRIS_SIGNING_ROOT_SHA1: 8601bb53dfc44d12d26f0e513ced84673b874cea
         run: |
