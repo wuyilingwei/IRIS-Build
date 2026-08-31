@@ -381,7 +381,9 @@ jobs:
         env:
           IRIS_SIGNING_CERT_PASSWORD: ${{ secrets.IRIS_SIGNING_PASSWORD }}
         run: node scripts/verify-release-signing.mjs --artifact-dir staged-installers
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - name: Retain staged installers for failed-build diagnosis
+        if: always() && hashFiles('staged-installers/**') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: installers-${{ matrix.os }}
           path: staged-installers

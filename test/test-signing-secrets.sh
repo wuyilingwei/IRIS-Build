@@ -20,6 +20,25 @@ rg -q 'sudo -n /usr/bin/security add-trusted-cert -d -r trustRoot -k /Library/Ke
 rg -q 'sudo -n /usr/bin/security delete-certificate -Z "\$IRIS_SIGNING_ROOT_SHA1" /Library/Keychains/System.keychain' "$workflow"
 rg -q "if: always\(\) && matrix.os == 'macos-latest'" "$workflow"
 test "$(rg -c '/usr/bin/perl -e' "$workflow")" -eq 2
+rg -q 'name: Retain staged installers for failed-build diagnosis' "$workflow"
+rg -q "if: always\(\) && hashFiles\('staged-installers/\*\*'\) != ''" "$workflow"
+if ! awk '
+  /name: Verify signed installers/ { verify = NR }
+  /name: Retain staged installers for failed-build diagnosis/ { retain = NR }
+  END { exit !(retain > verify) }
+' "$workflow"; then
+  echo 'diagnostic installer retention must follow signature verification' >&2
+  exit 1
+fi
+if ! awk '
+  /name: Retain staged installers for failed-build diagnosis/ { in_retain = 1 }
+  in_retain && /if-no-files-found: error/ { found = 1; exit }
+  in_retain && /^      - name:/ && !/Retain staged installers/ { exit }
+  END { exit !found }
+' "$workflow"; then
+  echo 'diagnostic installer retention must keep the empty-path error gate' >&2
+  exit 1
+fi
 if rg -n 'add-trusted-cert.*IRIS_SIGNING_P12|add-trusted-cert.*iris-signing\.p12' "$workflow"; then
   echo 'workflow must trust the public root, not the P12 leaf' >&2
   exit 1
