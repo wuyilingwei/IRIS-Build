@@ -8,54 +8,31 @@ if rg -n 'IRIS_MACOS_SIGNING_P12_BASE64|IRIS_MACOS_SIGNING_PASSWORD' "$workflow"
   exit 1
 fi
 
-if rg -n 'secrets\.IRIS_LEGACY' "$workflow"; then
-  echo 'legacy bridge must not add a signing secret' >&2
-  exit 1
-fi
-
 rg -q 'secrets\.IRIS_SIGNING_P12_BASE64' "$workflow"
 rg -q 'secrets\.IRIS_SIGNING_PASSWORD' "$workflow"
-rg -q 'IRIS_SIGNING_CERT_PASSWORD: \$\{\{ secrets\.IRIS_SIGNING_PASSWORD \}\}' "$workflow"
+rg -q 'secrets\.IRIS_LEGACY_BRIDGE_P12_BASE64' "$workflow"
+rg -q 'secrets\.IRIS_LEGACY_BRIDGE_PASSWORD' "$workflow"
 rg -q 'IRIS_SIGNING_MIGRATION_PHASE: legacy-bridge' "$workflow"
 rg -q 'IRIS_LEGACY_BRIDGE_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78' "$workflow"
-rg -q 'name: Checkout fixed legacy signing source' "$workflow"
-rg -q 'ref: 9308241a80cbd02b68505ac60dc1848cfb58bcd4' "$workflow"
-rg -q 'path: legacy-signing-source' "$workflow"
-rg -q 'ssh-key: \$\{\{ secrets\.IRIS_BUILD_DEPLOY_KEY \}\}' "$workflow"
-rg -q 'fetch-depth: 1' "$workflow"
-rg -q 'cp legacy-signing-source/certificates/iris-internal-signing-100y\.p12 "\$RUNNER_TEMP/iris-legacy-bridge.p12"' "$workflow"
-rg -q 'chmod 600 "\$RUNNER_TEMP/iris-legacy-bridge.p12"' "$workflow"
-if rg -n 'cat legacy-signing-source/certificates/iris-internal-signing-100y\.p12 >' "$workflow"; then
-  echo 'legacy P12 must be copied with restricted permissions' >&2
+rg -q 'name: Validate signing migration phase' "$workflow"
+rg -q 'IRIS_SIGNING_CERT_BASE64: \$\{\{ secrets\.IRIS_LEGACY_BRIDGE_P12_BASE64 \}\}' "$workflow"
+if rg -n 'legacy-signing-source|iris-legacy-bridge\.p12|9308241a|iris-internal-signing-100y\.p12' "$workflow"; then
+  echo 'legacy bridge must use the dedicated secret rather than a historical private bundle' >&2
   exit 1
 fi
-if rg -n 'git -C iris-source fetch|git -C iris-source show "\$IRIS_LEGACY_BRIDGE' "$workflow"; then
-  echo 'legacy signing source must be checked out with the existing deploy key' >&2
-  exit 1
-fi
-rg -q 'iris-internal-signing-100y\.p12' "$workflow"
-rg -q 'IRIS_SIGNING_CERT_FILE: \$\{\{ runner.temp \}\}/iris-legacy-bridge.p12' "$workflow"
 rg -q "IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge'" "$workflow"
 rg -q "IRIS_SIGNING_MIGRATION_PHASE == 'current'" "$workflow"
 rg -q 'IRIS_SIGNING_PROFILE: \$\{\{ env\.IRIS_SIGNING_MIGRATION_PHASE == '\''legacy-bridge'\'' && '\''legacy-bridge'\'' \|\| '\''current'\'' \}\}' "$workflow"
-rg -q 'openssl pkcs12 -in "\$RUNNER_TEMP/iris-legacy-bridge.p12" -nokeys' "$workflow"
-rg -q 'openssl pkcs12 -legacy -in "\$RUNNER_TEMP/iris-legacy-bridge.p12" -nokeys' "$workflow"
 if rg -n "source_sha == '9308241a|source_sha != '9308241a" "$workflow"; then
   echo 'legacy bridge must not select a historical source revision' >&2
   exit 1
 fi
-if rg -n 'IRIS_LEGACY_BRIDGE_SUPPORT_COMMIT|iris-legacy-bridge\.cert\.pem|git -C iris-source show "\$IRIS_LEGACY_BRIDGE_SUPPORT_COMMIT' "$workflow"; then
-  echo 'legacy bridge must build only the dispatched source checkout' >&2
-  exit 1
-fi
-rg -q 'iris-source legacy-signing-source staged-installers build' "$workflow"
 rg -q 'name: Trust legacy-bridge signing root for macOS build' "$workflow"
 rg -q 'name: Remove legacy-bridge signing root' "$workflow"
 if ! awk '
-  /name: Prepare fixed legacy-bridge signing certificate/ { prepare = NR }
   /name: Prepare legacy-bridge signing certificate/ { material = NR }
   /name: Verify signing identity/ { verify = NR }
-  END { exit !(prepare < material && material < verify) }
+  END { exit !(material < verify) }
 ' "$workflow"; then
   echo 'legacy bridge material and signing preparation must precede verification' >&2
   exit 1
