@@ -23,7 +23,12 @@ rg -q 'ref: 9308241a80cbd02b68505ac60dc1848cfb58bcd4' "$workflow"
 rg -q 'path: legacy-signing-source' "$workflow"
 rg -q 'ssh-key: \$\{\{ secrets\.IRIS_BUILD_DEPLOY_KEY \}\}' "$workflow"
 rg -q 'fetch-depth: 1' "$workflow"
-rg -q 'cat legacy-signing-source/certificates/iris-internal-signing-100y\.p12' "$workflow"
+rg -q 'cp legacy-signing-source/certificates/iris-internal-signing-100y\.p12 "\$RUNNER_TEMP/iris-legacy-bridge.p12"' "$workflow"
+rg -q 'chmod 600 "\$RUNNER_TEMP/iris-legacy-bridge.p12"' "$workflow"
+if rg -n 'cat legacy-signing-source/certificates/iris-internal-signing-100y\.p12 >' "$workflow"; then
+  echo 'legacy P12 must be copied with restricted permissions' >&2
+  exit 1
+fi
 if rg -n 'git -C iris-source fetch|git -C iris-source show "\$IRIS_LEGACY_BRIDGE' "$workflow"; then
   echo 'legacy signing source must be checked out with the existing deploy key' >&2
   exit 1

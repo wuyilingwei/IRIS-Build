@@ -423,7 +423,8 @@ jobs:
           IRIS_LEGACY_BRIDGE_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78
         run: |
           set -euo pipefail
-          cat legacy-signing-source/certificates/iris-internal-signing-100y.p12 > "$RUNNER_TEMP/iris-legacy-bridge.p12"
+          cp legacy-signing-source/certificates/iris-internal-signing-100y.p12 "$RUNNER_TEMP/iris-legacy-bridge.p12"
+          chmod 600 "$RUNNER_TEMP/iris-legacy-bridge.p12"
           [[ -s "$RUNNER_TEMP/iris-legacy-bridge.p12" ]] || { echo 'legacy bridge signing material is missing' >&2; exit 1; }
           /usr/bin/openssl pkcs12 -in "$RUNNER_TEMP/iris-legacy-bridge.p12" -nokeys -passin "pass:$IRIS_SIGNING_CERT_PASSWORD" >/dev/null 2>&1 || /usr/bin/openssl pkcs12 -legacy -in "$RUNNER_TEMP/iris-legacy-bridge.p12" -nokeys -passin "pass:$IRIS_SIGNING_CERT_PASSWORD" >/dev/null 2>&1
       - name: Prepare legacy-bridge signing certificate
