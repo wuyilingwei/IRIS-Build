@@ -27,6 +27,7 @@ ruby -r yaml -e '
     raise "missing public signing key" unless env["IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY"] == expected_key
     run = step.fetch("run")
     raise "PRO package key is not generated in this step" unless run.include?("randomBytes(32).toString(\"base64url\")")
+    raise "PRO signing keys are not matched before upload" unless run.include?("createPublicKey") && run.include?("timingSafeEqual")
     raise "PRO package key is not cleared" unless run.include?("unset IRIS_PRO_PACKAGE_KEY")
     raise "PRO package artifact is not cleared" unless run.include?("rm -rf build/pro-packages/iris.online-sync")
     raise "missing PRO pack command" unless run.include?("npm run pro:pack")
@@ -60,12 +61,20 @@ ruby -r yaml -e '
   raise "Shell matrix is missing shared PRO public key" unless installer.fetch("env")["IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY"] == expected_key
 
   [
+    jobs.fetch("core").fetch("steps").find { |step| step["name"] == "Pack core payload" },
+    jobs.fetch("shell-check").fetch("steps").find { |step| step["name"] == "Decrypt and pack core payload" },
+    installer,
+  ].each do |step|
+    raise "every Core payload and installer build must receive the same PRO public key" unless step.fetch("env")["IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY"] == expected_key
+  end
+
+  [
     jobs.fetch("core").fetch("steps").find { |step| step["name"] == "Stage core release assets" },
     jobs.fetch("shell-release").fetch("steps").find { |step| step["name"] == "Mirror GitHub Release" },
   ].each do |step|
     raise "missing public release asset step" unless step
     text = YAML.dump(step)
-    raise "public release may not include a PRO package artifact" if text.include?("build/pro-packages") || text.include?("manifest.json")
+    raise "public release may not include a PRO package artifact" if text.include?("build/pro-packages") || text.include?("manifest.json") || text.include?("artifact.irp")
   end
   puts "PRO package release constraints are satisfied"
 ' "$workflow"
