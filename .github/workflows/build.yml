@@ -411,20 +411,12 @@ jobs:
         env:
           IRIS_SIGNING_CERT_PASSWORD: ${{ secrets.IRIS_SIGNING_PASSWORD }}
           IRIS_LEGACY_BRIDGE_COMMIT: 9308241a80cbd02b68505ac60dc1848cfb58bcd4
-          IRIS_LEGACY_BRIDGE_SUPPORT_COMMIT: c77276bfe1b8973313fe03051cb6face6bb576d9
           IRIS_LEGACY_BRIDGE_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78
         run: |
           set -euo pipefail
-          git -C iris-source fetch --no-tags --depth=1 origin "$IRIS_LEGACY_BRIDGE_COMMIT" "$IRIS_LEGACY_BRIDGE_SUPPORT_COMMIT"
-          for file in electron/bootstrap/signing-profile.cjs electron/bootstrap/windows-signature.cjs scripts/bundle-assets.mjs scripts/internal-macos-sign.cjs scripts/prepare-release-signing.mjs scripts/verify-release-signing.mjs; do
-            mkdir -p "$(dirname "$file")"
-            git -C iris-source show "$IRIS_LEGACY_BRIDGE_SUPPORT_COMMIT:$file" > "$file"
-          done
+          git -C iris-source fetch --no-tags --depth=1 origin "$IRIS_LEGACY_BRIDGE_COMMIT"
           git -C iris-source show "$IRIS_LEGACY_BRIDGE_COMMIT:certificates/iris-internal-signing-100y.p12" > "$RUNNER_TEMP/iris-legacy-bridge.p12"
-          git -C iris-source show "$IRIS_LEGACY_BRIDGE_COMMIT:certificates/iris-internal-signing-100y.cert.pem" > "$RUNNER_TEMP/iris-legacy-bridge.cert.pem"
-          [[ -s "$RUNNER_TEMP/iris-legacy-bridge.p12" && -s "$RUNNER_TEMP/iris-legacy-bridge.cert.pem" ]] || { echo 'legacy bridge signing material is missing' >&2; exit 1; }
-          actual_sha1="$(/usr/bin/openssl x509 -in "$RUNNER_TEMP/iris-legacy-bridge.cert.pem" -noout -fingerprint -sha1 | /usr/bin/awk -F= '{gsub(/:/, "", $2); print tolower($2)}')"
-          [[ "$actual_sha1" == "$IRIS_LEGACY_BRIDGE_ROOT_SHA1" ]] || { echo 'legacy bridge public certificate does not match the fixed root' >&2; exit 1; }
+          [[ -s "$RUNNER_TEMP/iris-legacy-bridge.p12" ]] || { echo 'legacy bridge signing material is missing' >&2; exit 1; }
           /usr/bin/openssl pkcs12 -in "$RUNNER_TEMP/iris-legacy-bridge.p12" -nokeys -passin "pass:$IRIS_SIGNING_CERT_PASSWORD" >/dev/null 2>&1 || /usr/bin/openssl pkcs12 -legacy -in "$RUNNER_TEMP/iris-legacy-bridge.p12" -nokeys -passin "pass:$IRIS_SIGNING_CERT_PASSWORD" >/dev/null 2>&1
       - name: Prepare legacy-bridge signing certificate
         if: matrix.os != 'ubuntu-latest' && env.IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge'
@@ -448,7 +440,7 @@ jobs:
         if: matrix.os == 'macos-latest' && env.IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge'
         env:
           IRIS_LEGACY_BRIDGE_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78
-          IRIS_LEGACY_BRIDGE_ROOT_PATH: ${{ runner.temp }}/iris-legacy-bridge.cert.pem
+          IRIS_LEGACY_BRIDGE_ROOT_PATH: certificates/iris-internal-signing-100y.cert.pem
         run: |
           set -euo pipefail
           [[ -r "$IRIS_LEGACY_BRIDGE_ROOT_PATH" ]] || { echo 'legacy bridge public certificate is missing' >&2; exit 1; }
@@ -510,7 +502,7 @@ jobs:
           retention-days: 1
       - name: Wipe build workspace and signing material
         if: always()
-        run: rm -f "$RUNNER_TEMP/iris-signing.p12" "$RUNNER_TEMP/iris-legacy-bridge.p12" "$RUNNER_TEMP/iris-legacy-bridge.cert.pem"; rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" iris-source staged-installers build
+        run: rm -f "$RUNNER_TEMP/iris-signing.p12" "$RUNNER_TEMP/iris-legacy-bridge.p12"; rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" iris-source staged-installers build
       - name: Remove legacy-bridge signing root
         if: always() && matrix.os == 'macos-latest' && env.IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge'
         env:

@@ -18,12 +18,9 @@ rg -q 'secrets\.IRIS_SIGNING_PASSWORD' "$workflow"
 rg -q 'IRIS_SIGNING_CERT_PASSWORD: \$\{\{ secrets\.IRIS_SIGNING_PASSWORD \}\}' "$workflow"
 rg -q 'IRIS_SIGNING_MIGRATION_PHASE: legacy-bridge' "$workflow"
 rg -q 'IRIS_LEGACY_BRIDGE_COMMIT: 9308241a80cbd02b68505ac60dc1848cfb58bcd4' "$workflow"
-rg -q 'IRIS_LEGACY_BRIDGE_SUPPORT_COMMIT: c77276bfe1b8973313fe03051cb6face6bb576d9' "$workflow"
 rg -q 'IRIS_LEGACY_BRIDGE_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78' "$workflow"
 rg -q 'git -C iris-source fetch --no-tags --depth=1 origin' "$workflow"
-rg -q 'scripts/prepare-release-signing\.mjs scripts/verify-release-signing\.mjs' "$workflow"
 rg -q 'iris-internal-signing-100y\.p12' "$workflow"
-rg -q 'iris-internal-signing-100y\.cert\.pem' "$workflow"
 rg -q 'IRIS_SIGNING_CERT_FILE: \$\{\{ runner.temp \}\}/iris-legacy-bridge.p12' "$workflow"
 rg -q "IRIS_SIGNING_MIGRATION_PHASE == 'legacy-bridge'" "$workflow"
 rg -q "IRIS_SIGNING_MIGRATION_PHASE == 'current'" "$workflow"
@@ -34,9 +31,12 @@ if rg -n "source_sha == '9308241a|source_sha != '9308241a" "$workflow"; then
   echo 'legacy bridge must not select a historical source revision' >&2
   exit 1
 fi
+if rg -n 'IRIS_LEGACY_BRIDGE_SUPPORT_COMMIT|iris-legacy-bridge\.cert\.pem|git -C iris-source show "\$IRIS_LEGACY_BRIDGE_SUPPORT_COMMIT' "$workflow"; then
+  echo 'legacy bridge must build only the dispatched source checkout' >&2
+  exit 1
+fi
 rg -q 'name: Trust legacy-bridge signing root for macOS build' "$workflow"
 rg -q 'name: Remove legacy-bridge signing root' "$workflow"
-rg -q 'iris-legacy-bridge\.cert\.pem' "$workflow"
 if ! awk '
   /name: Prepare fixed legacy-bridge signing certificate/ { prepare = NR }
   /name: Prepare legacy-bridge signing certificate/ { material = NR }
@@ -49,7 +49,7 @@ fi
 
 rg -q "if: matrix.os == 'macos-latest'" "$workflow"
 rg -q 'IRIS_LEGACY_BRIDGE_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78' "$workflow"
-rg -q 'IRIS_LEGACY_BRIDGE_ROOT_PATH: \$\{\{ runner.temp \}\}/iris-legacy-bridge.cert.pem' "$workflow"
+rg -q 'IRIS_LEGACY_BRIDGE_ROOT_PATH: certificates/iris-internal-signing-100y.cert.pem' "$workflow"
 rg -q 'IRIS_SIGNING_ROOT_SHA1: 8601bb53dfc44d12d26f0e513ced84673b874cea' "$workflow"
 rg -q 'IRIS_SIGNING_ROOT_PATH: certificates/iris-internal-signing-root.cert.pem' "$workflow"
 rg -q 'sudo -n /usr/bin/security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain' "$workflow"
