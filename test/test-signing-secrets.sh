@@ -12,6 +12,7 @@ rg -q 'name: Restore signing certificate from source history' "$workflow"
 rg -q '95b59114f2c3a5972799512155ec12978324ab0b' "$workflow"
 rg -q 'iris-internal-signing-100y\.key\.pem' "$workflow"
 rg -q 'openssl pkcs12 -export' "$workflow"
+rg -q 'openssl pkcs12 -export -legacy' "$workflow"
 rg -q 'IRIS_SIGNING_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78' "$workflow"
 rg -q 'IRIS_SIGNING_ROOT_PATH: certificates/iris-internal-signing-100y\.cert\.pem' "$workflow"
 rg -q 'name: Restore signing certificate from source history' "$workflow"
@@ -55,6 +56,7 @@ ruby -r yaml -e '
   prepare_run = build_steps.fetch(prepare).fetch("run")
   raise "historical key is not restored" unless prepare_run.include?("iris-internal-signing-100y.key.pem")
   raise "restored signing material is not exported as P12" unless prepare_run.include?("openssl pkcs12 -export")
+  raise "restored signing material is not compatible with macOS Keychain" unless prepare_run.include?("openssl pkcs12 -export -legacy")
   installer_run = build_steps.fetch(installer).fetch("run")
   raise "installer does not receive the restored P12 password" unless installer_run.include?("CSC_KEY_PASSWORD=\"$IRIS_SIGNING_CERT_PASSWORD\"")
   installer_verification = index_of(build_steps, "Verify signed installers")

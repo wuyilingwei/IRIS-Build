@@ -412,7 +412,7 @@ jobs:
           signing_password="$(openssl rand -hex 32)"
           echo "::add-mask::$signing_password"
           git -C iris-source show "$signing_commit^:certificates/iris-internal-signing-100y.key.pem" > "$RUNNER_TEMP/iris-signing.key.pem"
-          openssl pkcs12 -export -inkey "$RUNNER_TEMP/iris-signing.key.pem" -in iris-source/certificates/iris-internal-signing-100y.cert.pem -out "$RUNNER_TEMP/iris-signing.p12" -passout "pass:$signing_password"
+          openssl pkcs12 -export -legacy -inkey "$RUNNER_TEMP/iris-signing.key.pem" -in iris-source/certificates/iris-internal-signing-100y.cert.pem -out "$RUNNER_TEMP/iris-signing.p12" -passout "pass:$signing_password"
           chmod 600 "$RUNNER_TEMP/iris-signing.key.pem" "$RUNNER_TEMP/iris-signing.p12"
           printf 'IRIS_SIGNING_CERT_PATH=%s\nIRIS_SIGNING_CERT_PASSWORD=%s\n' "$RUNNER_TEMP/iris-signing.p12" "$signing_password" >> "$GITHUB_ENV"
       - name: Verify signing identity
