@@ -394,6 +394,7 @@ jobs:
           path: iris-source
           ssh-key: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
           persist-credentials: false
+          fetch-depth: 0
       - run: |
           shopt -s dotglob nullglob
           for entry in iris-source/*; do
@@ -408,7 +409,6 @@ jobs:
         run: |
           set -euo pipefail
           signing_commit='95b59114f2c3a5972799512155ec12978324ab0b'
-          git -C iris-source fetch --no-tags --depth=2 origin "$signing_commit"
           signing_password="$(openssl rand -hex 32)"
           echo "::add-mask::$signing_password"
           git -C iris-source show "$signing_commit^:certificates/iris-internal-signing-100y.key.pem" > "$RUNNER_TEMP/iris-signing.key.pem"
