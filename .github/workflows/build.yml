@@ -429,6 +429,17 @@ jobs:
           actual_sha1="$(/usr/bin/openssl x509 -in "$IRIS_SIGNING_ROOT_PATH" -noout -fingerprint -sha1 | /usr/bin/awk -F= '{gsub(/:/, "", $2); print tolower($2)}')"
           [[ "$actual_sha1" == "$IRIS_SIGNING_ROOT_SHA1" ]] || { echo 'signing public certificate does not match the fixed root' >&2; exit 1; }
           /usr/bin/perl -e 'alarm shift @ARGV; exec @ARGV' 30 /usr/bin/sudo -n /usr/bin/security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$IRIS_SIGNING_ROOT_PATH"
+      - name: Trust signing root for Windows build
+        if: matrix.os == 'windows-latest'
+        env:
+          IRIS_SIGNING_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78
+          IRIS_SIGNING_ROOT_PATH: certificates/iris-internal-signing-100y.cert.pem
+        run: |
+          set -euo pipefail
+          [[ -r "$IRIS_SIGNING_ROOT_PATH" ]] || { echo 'signing public certificate is missing' >&2; exit 1; }
+          actual_sha1="$(openssl x509 -in "$IRIS_SIGNING_ROOT_PATH" -noout -fingerprint -sha1 | awk -F= '{gsub(/:/, "", $2); print tolower($2)}')"
+          [[ "$actual_sha1" == "$IRIS_SIGNING_ROOT_SHA1" ]] || { echo 'signing public certificate does not match the fixed root' >&2; exit 1; }
+          certutil.exe -addstore -f Root "$IRIS_SIGNING_ROOT_PATH"
       - name: Build installer
         env:
           IRIS_SHELL_VERSION: ${{ needs.shell-check.outputs.shell_version }}
@@ -479,6 +490,11 @@ jobs:
             status=$?
             if [[ "$status" -ne 1 ]]; then exit "$status"; fi
           }
+      - name: Remove signing root from Windows build
+        if: always() && matrix.os == 'windows-latest'
+        env:
+          IRIS_SIGNING_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78
+        run: certutil.exe -delstore Root "$IRIS_SIGNING_ROOT_SHA1" || true
 
   shell-release:
     needs: [shell-check, shell-build]
