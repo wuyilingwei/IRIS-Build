@@ -404,31 +404,6 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 20
-      - name: Restore signing certificate from source history
-        if: matrix.os != 'ubuntu-latest'
-        run: |
-          set -euo pipefail
-          signing_commit='95b59114f2c3a5972799512155ec12978324ab0b'
-          signing_password="$(openssl rand -hex 32)"
-          echo "::add-mask::$signing_password"
-          git -C iris-source show "$signing_commit^:certificates/iris-internal-signing-100y.key.pem" > "$RUNNER_TEMP/iris-signing.key.pem"
-          openssl pkcs12 -export -legacy -inkey "$RUNNER_TEMP/iris-signing.key.pem" -in iris-source/certificates/iris-internal-signing-100y.cert.pem -out "$RUNNER_TEMP/iris-signing.p12" -passout "pass:$signing_password"
-          chmod 600 "$RUNNER_TEMP/iris-signing.key.pem" "$RUNNER_TEMP/iris-signing.p12"
-          printf 'IRIS_SIGNING_CERT_PATH=%s\nIRIS_SIGNING_CERT_PASSWORD=%s\n' "$RUNNER_TEMP/iris-signing.p12" "$signing_password" >> "$GITHUB_ENV"
-      - name: Verify signing identity
-        if: matrix.os != 'ubuntu-latest'
-        run: node scripts/verify-release-signing.mjs
-      - name: Trust signing root for macOS build
-        if: matrix.os == 'macos-latest'
-        env:
-          IRIS_SIGNING_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78
-          IRIS_SIGNING_ROOT_PATH: certificates/iris-internal-signing-100y.cert.pem
-        run: |
-          set -euo pipefail
-          [[ -r "$IRIS_SIGNING_ROOT_PATH" ]] || { echo 'signing public certificate is missing' >&2; exit 1; }
-          actual_sha1="$(/usr/bin/openssl x509 -in "$IRIS_SIGNING_ROOT_PATH" -noout -fingerprint -sha1 | /usr/bin/awk -F= '{gsub(/:/, "", $2); print tolower($2)}')"
-          [[ "$actual_sha1" == "$IRIS_SIGNING_ROOT_SHA1" ]] || { echo 'signing public certificate does not match the fixed root' >&2; exit 1; }
-          /usr/bin/perl -e 'alarm shift @ARGV; exec @ARGV' 30 /usr/bin/sudo -n /usr/bin/security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$IRIS_SIGNING_ROOT_PATH"
       - name: Build installer
         env:
           IRIS_SHELL_VERSION: ${{ needs.shell-check.outputs.shell_version }}
@@ -442,22 +417,17 @@ jobs:
           IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY: ${{ secrets.IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY }}
           IRIS_LICENSE_BUILD_API_ORIGIN: https://iris.wuyilingwei.com
           IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: false
           DIST_CMD: ${{ matrix.dist_cmd }}
           EP_PREPACKAGED: ''
           NODE_OPTIONS: --max-old-space-size=4096
           WORKFLOW_REPORT_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
         run: |
-          export CSC_KEY_PASSWORD="$IRIS_SIGNING_CERT_PASSWORD"
           node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh apply-version
           node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh install
           node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh decrypt-key
           node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh build
           node .github/scripts/run-quiet.mjs -- bash .github/scripts/release-step.sh stage-installers
           cp release/latest*.yml staged-installers/ 2>/dev/null || true
-      - name: Verify signed installers
-        if: matrix.os != 'ubuntu-latest'
-        run: node scripts/verify-release-signing.mjs --artifact-dir staged-installers
       - name: Retain staged installers for failed-build diagnosis
         if: always() && hashFiles('staged-installers/**') != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -466,19 +436,9 @@ jobs:
           path: staged-installers
           if-no-files-found: error
           retention-days: 1
-      - name: Wipe build workspace and signing material
+      - name: Wipe build workspace
         if: always()
-        run: rm -f "$RUNNER_TEMP/iris-signing.key.pem" "$RUNNER_TEMP/iris-signing.p12"; rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" iris-source staged-installers build
-      - name: Remove signing root
-        if: always() && matrix.os == 'macos-latest'
-        env:
-          IRIS_SIGNING_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78
-        run: |
-          set -euo pipefail
-          /usr/bin/perl -e 'alarm shift @ARGV; exec @ARGV' 30 /usr/bin/sudo -n /usr/bin/security delete-certificate -Z "$IRIS_SIGNING_ROOT_SHA1" /Library/Keychains/System.keychain || {
-            status=$?
-            if [[ "$status" -ne 1 ]]; then exit "$status"; fi
-          }
+        run: rm -rf "$RUNNER_TEMP/iris-release-key" "$RUNNER_TEMP/iris-release-envelope" iris-source staged-installers build
 
   shell-release:
     needs: [shell-check, shell-build]
