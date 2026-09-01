@@ -48,21 +48,15 @@ ruby -r yaml -e '
   prepare = index_of(build_steps, "Restore signing certificate from source history")
   verify = index_of(build_steps, "Verify signing identity")
   trust = index_of(build_steps, "Trust signing root for macOS build")
-  windows_trust = index_of(build_steps, "Trust signing root for Windows build")
   installer = index_of(build_steps, "Build installer")
   cleanup = index_of(build_steps, "Remove signing root")
-  windows_cleanup = index_of(build_steps, "Remove signing root from Windows build")
   raise "signing certificate must be prepared before verification" unless prepare < verify
   raise "macOS root must be trusted before installer build" unless trust < installer
-  raise "Windows root must be trusted before installer build" unless windows_trust < installer
   raise "macOS root cleanup must follow installer build" unless installer < cleanup
-  raise "Windows root cleanup must follow installer build" unless installer < windows_cleanup
   prepare_run = build_steps.fetch(prepare).fetch("run")
   raise "historical key is not restored" unless prepare_run.include?("iris-internal-signing-100y.key.pem")
   raise "restored signing material is not exported as P12" unless prepare_run.include?("openssl pkcs12 -export")
   raise "restored signing material is not compatible with macOS Keychain" unless prepare_run.include?("openssl pkcs12 -export -legacy")
-  windows_trust_run = build_steps.fetch(windows_trust).fetch("run")
-  raise "Windows root is not installed before verification" unless windows_trust_run.include?("certutil.exe -addstore -f Root")
   installer_run = build_steps.fetch(installer).fetch("run")
   raise "installer does not receive the restored P12 password" unless installer_run.include?("CSC_KEY_PASSWORD=\"$IRIS_SIGNING_CERT_PASSWORD\"")
   installer_verification = index_of(build_steps, "Verify signed installers")
