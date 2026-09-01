@@ -3,16 +3,18 @@ set -euo pipefail
 
 workflow="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.github/workflows/build.yml"
 
-if rg -n 'IRIS_MACOS_SIGNING_P12_BASE64|IRIS_MACOS_SIGNING_PASSWORD|IRIS_LEGACY|IRIS_SIGNING_MIGRATION_PHASE|IRIS_SIGNING_PROFILE|8601bb53dfc44d12d26f0e513ced84673b874cea|iris-internal-signing-root\.cert\.pem|legacy-signing-source|iris-internal-signing-100y\.p12|9308241a' "$workflow"; then
+if rg -n 'IRIS_MACOS_SIGNING_P12_BASE64|IRIS_MACOS_SIGNING_PASSWORD|IRIS_LEGACY|IRIS_SIGNING_MIGRATION_PHASE|IRIS_SIGNING_PROFILE|8601bb53dfc44d12d26f0e513ced84673b874cea|iris-internal-signing-root\.cert\.pem|secrets\.IRIS_SIGNING_P12_BASE64|secrets\.IRIS_SIGNING_PASSWORD' "$workflow"; then
   echo 'workflow must use only the unified retained signing identity' >&2
   exit 1
 fi
 
-rg -q 'secrets\.IRIS_SIGNING_P12_BASE64' "$workflow"
-rg -q 'secrets\.IRIS_SIGNING_PASSWORD' "$workflow"
+rg -q 'name: Restore signing certificate from source history' "$workflow"
+rg -q '95b59114f2c3a5972799512155ec12978324ab0b' "$workflow"
+rg -q 'iris-internal-signing-100y\.key\.pem' "$workflow"
+rg -q 'openssl pkcs12 -export' "$workflow"
 rg -q 'IRIS_SIGNING_ROOT_SHA1: 7dbbec289bce316a2163ee3d4f4292836733bd78' "$workflow"
 rg -q 'IRIS_SIGNING_ROOT_PATH: certificates/iris-internal-signing-100y\.cert\.pem' "$workflow"
-rg -q 'name: Prepare signing certificate' "$workflow"
+rg -q 'name: Restore signing certificate from source history' "$workflow"
 rg -q 'name: Verify signing identity' "$workflow"
 rg -q 'name: Trust signing root for macOS build' "$workflow"
 rg -q 'name: Remove signing root' "$workflow"
@@ -37,14 +39,12 @@ ruby -r yaml -e '
   validation = shell_check.fetch("steps").find { |step| step["name"] == "Validate inputs and secrets" }
   raise "shell-check signing validation is missing" unless validation
   env = validation.fetch("env")
-  raise "shell-check does not use unified P12 secret" unless env["IRIS_SIGNING_CERT_BASE64"] == "${{ secrets.IRIS_SIGNING_P12_BASE64 }}"
-  raise "shell-check does not use unified P12 password" unless env["IRIS_SIGNING_CERT_PASSWORD"] == "${{ secrets.IRIS_SIGNING_PASSWORD }}"
+  raise "shell-check must not read a signing secret" if env.key?("IRIS_SIGNING_CERT_BASE64") || env.key?("IRIS_SIGNING_CERT_PASSWORD")
   run = validation.fetch("run")
-  raise "shell-check does not reject missing unified P12 secret" unless run.include?("IRIS_SIGNING_CERT_BASE64")
-  raise "shell-check does not reject missing unified P12 password" unless run.include?("IRIS_SIGNING_CERT_PASSWORD")
+  raise "shell-check no longer validates the release upload token" unless run.include?("IRIS_RELEASE_UPLOAD_TOKEN")
 
   build_steps = jobs.fetch("shell-build").fetch("steps")
-  prepare = index_of(build_steps, "Prepare signing certificate")
+  prepare = index_of(build_steps, "Restore signing certificate from source history")
   verify = index_of(build_steps, "Verify signing identity")
   trust = index_of(build_steps, "Trust signing root for macOS build")
   installer = index_of(build_steps, "Build installer")
@@ -52,14 +52,11 @@ ruby -r yaml -e '
   raise "signing certificate must be prepared before verification" unless prepare < verify
   raise "macOS root must be trusted before installer build" unless trust < installer
   raise "macOS root cleanup must follow installer build" unless installer < cleanup
-  prepare_env = build_steps.fetch(prepare).fetch("env")
-  raise "build does not use unified P12 secret" unless prepare_env["IRIS_SIGNING_CERT_BASE64"] == "${{ secrets.IRIS_SIGNING_P12_BASE64 }}"
-  verify_env = build_steps.fetch(verify).fetch("env")
-  raise "identity verification does not use unified P12 password" unless verify_env["IRIS_SIGNING_CERT_PASSWORD"] == "${{ secrets.IRIS_SIGNING_PASSWORD }}"
-  installer_env = build_steps.fetch(installer).fetch("env")
-  raise "installer does not use unified P12 password" unless installer_env["CSC_KEY_PASSWORD"] == "${{ matrix.os != '\''ubuntu-latest'\'' && secrets.IRIS_SIGNING_PASSWORD || '\'''\'' }}"
-  verify_installer = build_steps.fetch(index_of(build_steps, "Verify signed installers")).fetch("env")
-  raise "installer verification does not use unified P12 password" unless verify_installer["IRIS_SIGNING_CERT_PASSWORD"] == "${{ secrets.IRIS_SIGNING_PASSWORD }}"
+  prepare_run = build_steps.fetch(prepare).fetch("run")
+  raise "historical key is not restored" unless prepare_run.include?("iris-internal-signing-100y.key.pem")
+  raise "restored signing material is not exported as P12" unless prepare_run.include?("openssl pkcs12 -export")
+  installer_run = build_steps.fetch(installer).fetch("run")
+  raise "installer does not receive the restored P12 password" unless installer_run.include?("CSC_KEY_PASSWORD=\"$IRIS_SIGNING_CERT_PASSWORD\"")
   installer_verification = index_of(build_steps, "Verify signed installers")
   retain = index_of(build_steps, "Retain staged installers for failed-build diagnosis")
   raise "diagnostic installer retention must follow signature verification" unless installer_verification < retain
