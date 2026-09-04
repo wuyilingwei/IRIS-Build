@@ -6,80 +6,71 @@ workflow="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.github/workflows/bui
 ruby -r yaml -e '
   workflow = YAML.load_file(ARGV.fetch(0))
   jobs = workflow.fetch("jobs")
-  expected_key = "${{ secrets.IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY }}"
-  private_secret = "${{ secrets.IRIS_PRO_PACKAGE_SIGNING_PRIVATE_KEY }}"
+  text = File.read(ARGV.fetch(0))
 
-  def index_of(steps, name)
-    index = steps.index { |step| step["name"] == name }
+  retired = %w[IRIS_PRO_PACKAGE pro:pack upload-pro-package.mjs build/pro-packages artifact.irp]
+  found = retired.select { |token| text.include?(token) }
+  raise "retired PRO dependency remains: #{found.join(", ")}" unless found.empty?
+
+  def steps(job)
+    job.fetch("steps")
+  end
+
+  def index_of(entries, name)
+    index = entries.index { |entry| entry["name"] == name }
     raise "missing step: #{name}" unless index
     index
   end
 
-  def assert_pro_step(steps, version, private_secret, expected_key)
-    step = steps.select { |entry| entry["name"] == "Pack and upload private PRO package" }
-    raise "expected one PRO package step" unless step.length == 1
-    step = step.fetch(0)
-    env = step.fetch("env")
-    raise "incorrect PRO package id" unless env["IRIS_PRO_PACKAGE_ID"] == "iris.online-sync"
-    raise "incorrect PRO package version" unless env["IRIS_PRO_PACKAGE_VERSION"] == version
-    raise "incorrect minimum Core version" unless env["IRIS_PRO_PACKAGE_MIN_CORE_VERSION"] == version
-    raise "missing private signing key" unless env["IRIS_PRO_PACKAGE_SIGNING_PRIVATE_KEY"] == private_secret
-    raise "missing public signing key" unless env["IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY"] == expected_key
-    run = step.fetch("run")
-    raise "PRO package key is not generated in this step" unless run.include?("randomBytes(32).toString(\"base64url\")")
-    raise "PRO signing keys are not matched before upload" unless run.include?("createPublicKey") && run.include?("timingSafeEqual")
-    raise "PRO package key is not cleared" unless run.include?("unset IRIS_PRO_PACKAGE_KEY")
-    raise "PRO package artifact is not cleared" unless run.include?("rm -rf build/pro-packages/iris.online-sync")
-    raise "missing PRO pack command" unless run.include?("npm run pro:pack")
-    raise "missing private PRO upload command" unless run.include?("node .github/scripts/upload-pro-package.mjs")
-    raise "package key must not cross jobs" if run.include?("GITHUB_OUTPUT") || run.include?("upload-artifact")
+  required_common = %w[IRIS_BUILD_DEPLOY_KEY IRIS_TAG_DEPLOY_KEY IRIS_RELEASE_UPLOAD_TOKEN]
+  core = jobs.fetch("core")
+  shell_check = jobs.fetch("shell-check")
+  [[core, required_common], [shell_check, required_common + ["IRIS_RELEASE_KEY_TRANSFER_KEY"]]].each do |job, required|
+    validation = steps(job).find { |step| step["name"] == "Validate inputs and secrets" }
+    raise "missing release input validation" unless validation
+    env = validation.fetch("env")
+    required.each do |key|
+      raise "missing validation secret #{key}" unless env[key] == "${{ secrets.#{key} }}"
+      raise "validation does not require #{key}" unless validation.fetch("run").include?(key)
+    end
   end
 
-  core_steps = jobs.fetch("core").fetch("steps")
-  shell_check_steps = jobs.fetch("shell-check").fetch("steps")
-  [jobs.fetch("core"), jobs.fetch("shell-check")].each do |job|
-    validation = job.fetch("steps").find { |step| step["name"] == "Validate inputs and secrets" }
-    raise "missing release input validation" unless validation
-    raise "tag deployment key must be checked before release work" unless validation.fetch("env")["IRIS_TAG_DEPLOY_KEY"] == "${{ secrets.IRIS_TAG_DEPLOY_KEY }}" && validation.fetch("run").include?("IRIS_TAG_DEPLOY_KEY")
-  end
-  [core_steps, shell_check_steps].each do |steps|
-    static = index_of(steps, "Run release static contract check")
-    behavior = index_of(steps, "Run release behavior gate")
+  [core, shell_check].each do |job|
+    entries = steps(job)
+    static = index_of(entries, "Run release static contract check")
+    behavior = index_of(entries, "Run release behavior gate")
     raise "static contract check must run before behavior gate" unless static < behavior
-    raise "static contract check must execute the static suite" unless steps.fetch(static).fetch("run").include?("npm run test:release-static")
-    raise "behavior gate must remain the GUI behavior suite" unless steps.fetch(behavior).fetch("run").include?("npm run test:release-behavior")
+    raise "static suite is not executed" unless entries.fetch(static).fetch("run").include?("npm run test:release-static")
+    raise "behavior suite is not executed" unless entries.fetch(behavior).fetch("run").include?("npm run test:release-behavior")
   end
-  assert_pro_step(core_steps, "${{ steps.number.outputs.core_version }}", private_secret, expected_key)
-  assert_pro_step(shell_check_steps, "${{ steps.prepare.outputs.core_version }}", private_secret, expected_key)
-  [[core_steps, "Generate core release key"], [shell_check_steps, "Generate release key"]].each do |steps, next_step|
-    gate = index_of(steps, "Run release behavior gate")
-    package = index_of(steps, "Pack and upload private PRO package")
-    raise "PRO package step must follow behavior gate" unless package > gate
-    raise "PRO package step must precede release material" unless package < index_of(steps, next_step)
-  end
+
+  shell_check_steps = steps(shell_check)
+  fingerprint = shell_check_steps.find { |step| step["name"] == "Prepare release and core payload" }
+  raise "shell fingerprint generation is missing" unless fingerprint.fetch("run").include?("shell-fingerprint")
+  raise "release key generation is missing" unless shell_check_steps.any? { |step| step["name"] == "Generate release key" }
 
   shell_build = jobs.fetch("shell-build")
-  shell_build_text = YAML.dump(shell_build)
-  raise "Shell matrix must not publish or sign PRO packages" if shell_build_text.include?("IRIS_PRO_PACKAGE_SIGNING_PRIVATE_KEY") || shell_build_text.include?("npm run pro:pack") || shell_build_text.include?("upload-pro-package.mjs")
-  installer = shell_build.fetch("steps").find { |step| step["name"] == "Build installer" }
-  raise "Shell matrix is missing its installer build" unless installer
-  raise "Shell matrix is missing shared PRO public key" unless installer.fetch("env")["IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY"] == expected_key
+  matrix = shell_build.fetch("strategy").fetch("matrix").fetch("include")
+  raise "shell matrix must retain three platforms" unless matrix.map { |entry| entry.fetch("os") }.sort == %w[macos-latest ubuntu-latest windows-latest]
+  installer = steps(shell_build).find { |step| step["name"] == "Build installer" }
+  raise "shell installer build is missing" unless installer
+  raise "installer must decrypt release key" unless installer.fetch("run").include?("decrypt-key")
 
-  [
-    jobs.fetch("core").fetch("steps").find { |step| step["name"] == "Pack core payload" },
-    jobs.fetch("shell-check").fetch("steps").find { |step| step["name"] == "Decrypt and pack core payload" },
-    installer,
-  ].each do |step|
-    raise "every Core payload and installer build must receive the same PRO public key" unless step.fetch("env")["IRIS_PRO_PACKAGE_SIGNING_PUBLIC_KEY"] == expected_key
+  [[core, "Generate core release key"], [shell_check, "Generate release key"]].each do |job, next_step|
+    entries = steps(job)
+    pack = entries.find { |step| step["run"].to_s.include?("pack-payload") }
+    raise "payload packing is missing" unless pack
+    raise "release key step must precede payload packing" unless index_of(entries, next_step) < entries.index(pack)
   end
 
-  [
-    jobs.fetch("core").fetch("steps").find { |step| step["name"] == "Stage core release assets" },
-    jobs.fetch("shell-release").fetch("steps").find { |step| step["name"] == "Mirror GitHub Release" },
-  ].each do |step|
-    raise "missing public release asset step" unless step
-    text = YAML.dump(step)
-    raise "public release may not include a PRO package artifact" if text.include?("build/pro-packages") || text.include?("manifest.json") || text.include?("artifact.irp")
+  raise "core release tag is missing" unless steps(core).any? { |step| step["name"] == "Tag published core source" && step.fetch("run").include?("tag-build-commit.sh") }
+  shell_release = jobs.fetch("shell-release")
+  raise "shell release must require shell-check and shell-build" unless shell_release.fetch("needs") == ["shell-check", "shell-build"]
+  release_run = steps(shell_release).find { |step| step["name"] == "Mirror GitHub Release" }.fetch("run")
+  raise "release must verify immutable asset state" unless release_run.include?("state != \"uploaded\"")
+
+  [core, shell_check, shell_build, shell_release].each do |job|
+    raise "secrets cleanup is missing" unless steps(job).any? { |step| step["name"].to_s.start_with?("Wipe") && step.fetch("run", "").include?("rm -rf") }
   end
-  puts "PRO package release constraints are satisfied"
+  puts "retired PRO dependencies are absent and release gates remain protected"
 ' "$workflow"
