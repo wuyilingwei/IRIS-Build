@@ -11,7 +11,7 @@ on:
         type: choice
         options: [core, shell]
       source_sha:
-        description: Exact 40-character commit in wuyilingwei/IRIS
+        description: Exact 40-character commit in lsy-404/IRIS
         required: true
         type: string
       shell_version:
@@ -29,9 +29,9 @@ concurrency:
 env:
   SOURCE_SHA: ${{ github.event.client_payload.source_sha || inputs.source_sha }}
   IRIS_SOURCE_SHA: ${{ github.event.client_payload.source_sha || inputs.source_sha }}
-  IRIS_LICENSE_API_URL: https://iris.wuyilingwei.com
-  IRIS_LICENSE_BUILD_API_ORIGIN: https://iris.wuyilingwei.com
-  WORKFLOW_REPORT_API: https://iris.wuyilingwei.com/api/v1/internal/workflow-reports
+  IRIS_LICENSE_API_URL: https://iris.voidcarve.com
+  IRIS_LICENSE_BUILD_API_ORIGIN: https://iris.voidcarve.com
+  WORKFLOW_REPORT_API: https://iris.voidcarve.com/api/v1/internal/workflow-reports
 
 defaults:
   run:
@@ -61,7 +61,7 @@ jobs:
       - name: Checkout exact private source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          repository: wuyilingwei/IRIS
+          repository: lsy-404/IRIS
           ref: ${{ env.SOURCE_SHA }}
           path: iris-source
           ssh-key: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
@@ -173,7 +173,7 @@ jobs:
         if: steps.gate.outputs.shell_build != 'true'
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          repository: wuyilingwei/IRIS
+          repository: lsy-404/IRIS
           ref: ${{ env.SOURCE_SHA }}
           path: tag-source
           ssh-key: ${{ secrets.IRIS_TAG_DEPLOY_KEY }}
@@ -231,7 +231,7 @@ jobs:
           [[ -n "$IRIS_BUILD_DEPLOY_KEY" && -n "$IRIS_TAG_DEPLOY_KEY" && -n "$IRIS_RELEASE_UPLOAD_TOKEN" && -n "$IRIS_RELEASE_KEY_TRANSFER_KEY" ]] || { echo 'required secrets are missing' >&2; exit 1; }
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          repository: wuyilingwei/IRIS
+          repository: lsy-404/IRIS
           ref: ${{ env.SOURCE_SHA }}
           path: iris-source
           ssh-key: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
@@ -324,7 +324,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          repository: wuyilingwei/IRIS
+          repository: lsy-404/IRIS
           ref: ${{ needs.shell-check.outputs.source_sha }}
           path: iris-source
           ssh-key: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
@@ -349,7 +349,7 @@ jobs:
           IRIS_CORE_VERSION: ${{ needs.shell-check.outputs.core_version }}
           IRIS_INTERNAL_VERSION: ${{ needs.shell-check.outputs.internal_version }}
           IRIS_SOURCE_SHA: ${{ needs.shell-check.outputs.source_sha }}
-          IRIS_LICENSE_BUILD_API_ORIGIN: https://iris.wuyilingwei.com
+          IRIS_LICENSE_BUILD_API_ORIGIN: https://iris.voidcarve.com
           IRIS_RELEASE_UPLOAD_TOKEN: ${{ secrets.IRIS_RELEASE_UPLOAD_TOKEN }}
           DIST_CMD: ${{ matrix.dist_cmd }}
           EP_PREPACKAGED: ''
@@ -385,7 +385,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          repository: wuyilingwei/IRIS
+          repository: lsy-404/IRIS
           ref: ${{ needs.shell-check.outputs.source_sha }}
           path: iris-source
           ssh-key: ${{ secrets.IRIS_BUILD_DEPLOY_KEY }}
@@ -428,7 +428,7 @@ jobs:
       - name: Checkout source for shell and core tags
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          repository: wuyilingwei/IRIS
+          repository: lsy-404/IRIS
           ref: ${{ needs.shell-check.outputs.source_sha }}
           path: tag-source
           ssh-key: ${{ secrets.IRIS_TAG_DEPLOY_KEY }}
